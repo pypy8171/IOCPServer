@@ -1,6 +1,8 @@
 #include <iostream>
 #include <WS2tcpip.h>
 #include <MSWSock.h>
+#include <thread>
+#include <vector>
 #pragma comment (lib, "WS2_32.lib")
 #pragma comment (lib, "mswsock.lib")
 
@@ -18,7 +20,10 @@ struct EXOVER
 	WSAOVERLAPPED	over;
 	ENUMOP			op;
 	char			io_buf[MAX_BUF_SIZE];
-	WSABUF			wsabuf;
+	union {
+		WSABUF			wsabuf;
+		SOCKET			c_socket;
+	};
 };
 
 struct CLIENT
@@ -37,6 +42,7 @@ struct CLIENT
 CLIENT g_clients[MAX_USER];
 int g_curr_user_id = 0;
 HANDLE g_iocp;
+SOCKET l_socket;
 
 void send_move_packet(int user_id, int mover);
 void send_login_ok_packet(int user_id);
@@ -49,6 +55,8 @@ void enter_game(int user_id);
 void initialize_clients();
 void disconnect(int user_id);
 void recv_packet_construct(int user_id, int io_byte);
+
+void worker_thread();
 
 void do_move(int user_id, int direction)
 {
@@ -209,6 +217,8 @@ void initialize_clients()
 void disconnect(int user_id)
 {
 	g_clients[user_id].m_bConnected = false;
+	if(!g_clients[user_id].m_bConnected) --g_curr_user_id;
+
 	for (auto& cl : g_clients)
 	{
 		if (true == g_clients[cl.m_id].m_bConnected)
@@ -243,6 +253,7 @@ void recv_packet_construct(int user_id, int io_byte) // io_byte는 dword이긴함
 		}
 		else
 		{
+			
 			memcpy(cu.m_packet_buf + cu.m_prev_size, p, rest_byte); // cu.m_packet_buf 이미 prev_size가 0이 아니라 그냥 쓰면 안됨
 			cu.m_prev_size += rest_byte;
 			rest_byte = 0;
@@ -251,42 +262,8 @@ void recv_packet_construct(int user_id, int io_byte) // io_byte는 dword이긴함
 	}
 }
 
-
-int main()
+void worker_thread()
 {
-	WSADATA WSAData;
-	WSAStartup(MAKEWORD(2, 2), &WSAData);
-
-	SOCKET l_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
-
-	SOCKADDR_IN s_address;
-	memset(&s_address, 0, sizeof(s_address));
-	s_address.sin_family = AF_INET; // ipv4 인터넷 주소체계
-	s_address.sin_port = htons(SERVER_PORT); // htons사용 이유 // 16비트 포트정보
-	s_address.sin_addr.S_un.S_addr = htonl(INADDR_ANY); // 32비트 ip정보
-	::bind(l_socket, reinterpret_cast<sockaddr*>(&s_address), sizeof(s_address)); // error +
-	// c++11 bind가 아닌 bind를 사용하기 위해 ::
-
-	listen(l_socket, SOMAXCONN); // error + 
-
-	// <accept>
-	// SOCKADDR_IN c_address;
-	// memset(&c_address, 0, sizeof(c_address));
-	// int c_addr_size = sizeof(c_address);
-
-	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
-
-	initialize_clients();
-
-	CreateIoCompletionPort(reinterpret_cast<HANDLE>(l_socket), g_iocp, 999, 0); // 등록
-
-	SOCKET c_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
-	EXOVER accept_over;
-	ZeroMemory(&accept_over.over, sizeof(accept_over.over));
-	accept_over.op = OP_ACCEPT;
-	AcceptEx(l_socket, c_socket, accept_over.io_buf, NULL, sizeof(sockaddr_in) + 16, sizeof(sockaddr_in) + 16, NULL, &accept_over.over);
-	// 반환이 아니라 초기화된 소켓을 넣음
-
 	while (true)
 	{
 		DWORD io_byte;
@@ -315,7 +292,7 @@ int main()
 				WSARecv(cl.m_socket, &cl.m_recv_over.wsabuf, 1, NULL, &flags, &cl.m_recv_over.over, NULL);
 			}
 		}
-			break;
+		break;
 		case OP_SEND:
 			if (0 == io_byte)
 				disconnect(user_id);
@@ -325,33 +302,82 @@ int main()
 			}
 			break;
 		case OP_ACCEPT:
-			{
-				int user_id = g_curr_user_id++;
-				CreateIoCompletionPort(reinterpret_cast<HANDLE>(c_socket), g_iocp, user_id, 0);
-				g_curr_user_id = g_curr_user_id % MAX_USER;
+		{
+			int user_id = g_curr_user_id++;
+			g_curr_user_id = g_curr_user_id % MAX_USER;
 
-				CLIENT& NewClient = g_clients[user_id];
-				NewClient.m_id = user_id;
-				NewClient.m_prev_size = 0;
-				NewClient.m_recv_over.op = OP_RECV;
-				ZeroMemory(&NewClient.m_recv_over.over, sizeof(NewClient.m_recv_over.op));
-				NewClient.m_recv_over.wsabuf.buf = NewClient.m_recv_over.io_buf;
-				NewClient.m_recv_over.wsabuf.len = MAX_BUF_SIZE;
-				NewClient.m_socket = c_socket;
-				NewClient.x = rand() % WORLD_WIDTH;
-				NewClient.y = rand() % WORLD_HEIGHT;
-				DWORD flags = 0;
-				WSARecv(c_socket, &NewClient.m_recv_over.wsabuf, 1, NULL, &flags, &NewClient.m_recv_over.over, NULL);
+			SOCKET	c_socket = exover->c_socket;
+			CreateIoCompletionPort(reinterpret_cast<HANDLE>(c_socket), g_iocp, user_id, 0);
 
-				c_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
-				ZeroMemory(&accept_over.over, sizeof(accept_over.over));
-				AcceptEx(l_socket, c_socket, accept_over.io_buf, NULL, sizeof(sockaddr_in) + 16, sizeof(sockaddr_in) + 16, NULL, &accept_over.over);
+			CLIENT& NewClient = g_clients[user_id];
+			NewClient.m_id = user_id;
+			NewClient.m_prev_size = 0;
+			NewClient.m_recv_over.op = OP_RECV;
+			ZeroMemory(&NewClient.m_recv_over.over, sizeof(NewClient.m_recv_over.op));
+			NewClient.m_recv_over.wsabuf.buf = NewClient.m_recv_over.io_buf;
+			NewClient.m_recv_over.wsabuf.len = MAX_BUF_SIZE;
+			NewClient.m_socket = c_socket;
+			NewClient.x = rand() % WORLD_WIDTH;
+			NewClient.y = rand() % WORLD_HEIGHT;
+			DWORD flags = 0;
+			WSARecv(c_socket, &NewClient.m_recv_over.wsabuf, 1, NULL, &flags, &NewClient.m_recv_over.over, NULL);
 
-			}
-			break;
+			c_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+
+			exover->c_socket = c_socket;
+			ZeroMemory(&exover->over, sizeof(exover->over));
+			AcceptEx(l_socket, exover->c_socket, exover->io_buf, NULL,
+				sizeof(sockaddr_in) + 16, sizeof(sockaddr_in) + 16, NULL, &exover->over);
+
+		}
+		break;
 		}
 
 	}
+}
+
+int main()
+{
+	WSADATA WSAData;
+	WSAStartup(MAKEWORD(2, 2), &WSAData);
+
+	l_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+
+	SOCKADDR_IN s_address; // 프로토콜, 인터넷 포트, 클라 서버 주소체계
+	memset(&s_address, 0, sizeof(s_address));
+	//fill_n(&s_address, sizeof(s_address), 0);
+	s_address.sin_family = AF_INET; // ipv4 인터넷 주소체계
+	s_address.sin_port = htons(SERVER_PORT); // htons사용 이유 // 16비트 포트정보
+	s_address.sin_addr.S_un.S_addr = htonl(INADDR_ANY); // 32비트 ip정보
+	::bind(l_socket, reinterpret_cast<sockaddr*>(&s_address), sizeof(s_address)); // error +
+	// c++11 bind가 아닌 bind를 사용하기 위해 ::
+
+	listen(l_socket, SOMAXCONN); // error + 
+
+	// <accept>
+	// SOCKADDR_IN c_address;
+	// memset(&c_address, 0, sizeof(c_address));
+	// int c_addr_size = sizeof(c_address);
+
+	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
+
+	initialize_clients();
+
+	CreateIoCompletionPort(reinterpret_cast<HANDLE>(l_socket), g_iocp, 999, 0); // 등록
+
+	SOCKET c_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	EXOVER accept_over;
+
+	ZeroMemory(&accept_over.over, sizeof(accept_over.over));
+	accept_over.op = OP_ACCEPT;
+	accept_over.c_socket = c_socket;
+	AcceptEx(l_socket, accept_over.c_socket, accept_over.io_buf, NULL, 
+		sizeof(sockaddr_in) + 16, sizeof(sockaddr_in) + 16, NULL, &accept_over.over);
+	// 반환이 아니라 초기화된 소켓을 넣음
+
+	vector<thread> worker_threads;
+	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(worker_thread);
+	for (auto& threads : worker_threads) threads.join();
 }
 
 //iobuf 와 packetbuf 차이
