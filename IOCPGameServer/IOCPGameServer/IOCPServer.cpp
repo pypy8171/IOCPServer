@@ -3,6 +3,7 @@
 #include <MSWSock.h>
 #include <thread>
 #include <vector>
+#include <mutex>
 #pragma comment (lib, "WS2_32.lib")
 #pragma comment (lib, "mswsock.lib")
 
@@ -14,6 +15,7 @@ constexpr auto MAX_BUF_SIZE = 2024;
 constexpr auto MAX_USER = 10;
 
 enum ENUMOP { OP_RECV = 0, OP_SEND, OP_ACCEPT };
+enum C_STATUS {ST_FREE, ST_ALLOC, ST_ACTIVE };
 
 struct EXOVER
 {
@@ -28,19 +30,19 @@ struct EXOVER
 
 struct CLIENT
 {
-	SOCKET	m_socket;
-	int		m_id;
-	EXOVER	m_recv_over;
-	int		m_prev_size;
-	char	m_packet_buf[MAX_PACKET_SIZE];
+	mutex		m_cl;
+	SOCKET		m_socket;
+	int			m_id;
+	EXOVER		m_recv_over;
+	int			m_prev_size;
+	char		m_packet_buf[MAX_PACKET_SIZE];
+	C_STATUS	m_status;
 
-	bool	m_bConnected;
-	short	x, y;
-	char	name[MAX_ID_LEN + 1]; // 꽉차서 올수 있으므로 +1
+	short		x, y;
+	char		name[MAX_ID_LEN + 1]; // 꽉차서 올수 있으므로 +1
 };
 
 CLIENT g_clients[MAX_USER];
-int g_curr_user_id = 0;
 HANDLE g_iocp;
 SOCKET l_socket;
 
@@ -89,8 +91,12 @@ void do_move(int user_id, int direction)
 
 	for (auto& clients : g_clients)
 	{
-		if(true == clients.m_bConnected)
+		clients.m_cl.lock();
+		if (ST_ACTIVE == clients.m_status)
+		{
 			send_move_packet(clients.m_id, user_id);
+		}
+		clients.m_cl.unlock();
 	}
 }
 
@@ -162,12 +168,20 @@ void send_leave_packet(int user_id, int o_id)
 	send_packet(user_id, &packet);
 }
 
-void enter_game(int user_id)
-{
-	g_clients[user_id].m_bConnected = true;
+void enter_game(int user_id, char name[]) // lock 이중으로 했다가 문제 생김 // userid에서 락걸고 i로 또 검. 같은 놈이 lock걸림 = 데드락// 락을 걸고 또 요청 -> 데드락
+{											// 따라서 lock 을 못 얻음
+	g_clients[user_id].m_cl.lock();
+	strcpy_s(g_clients[user_id].name, name);
+	g_clients[user_id].name[MAX_ID_LEN] = NULL;
+	send_login_ok_packet(user_id);
+
 	for (int i = 0; i < MAX_USER; ++i)
 	{
-		if (true == g_clients[i].m_bConnected)
+		if (user_id == i) // send_enter_packet 역시도 같음 // 내가 나한테 send enter packet을 보낼 이유가 없음
+			continue;
+
+		g_clients[i].m_cl.lock();
+		if (ST_ACTIVE == g_clients[i].m_status)
 		{
 			if (i != user_id)
 			{
@@ -175,7 +189,10 @@ void enter_game(int user_id)
 				send_enter_packet(i, user_id);
 			}
 		}
+		g_clients[i].m_cl.unlock();
 	}
+	g_clients[user_id].m_cl.unlock();
+	g_clients[user_id].m_status = ST_ACTIVE;
 }
 
 void process_packet(int user_id, char* buf)
@@ -185,10 +202,7 @@ void process_packet(int user_id, char* buf)
 	case C2S_LOGIN:
 	{
 		cs_packet_login* packet = reinterpret_cast<cs_packet_login*>(buf);
-		strcpy_s(g_clients[user_id].name, packet->name);
-		g_clients[user_id].name[MAX_ID_LEN] = NULL;
-		send_login_ok_packet(user_id);
-		enter_game(user_id);
+		enter_game(user_id,packet->name);
 	}
 	break;
 	case C2S_MOVE:
@@ -206,25 +220,34 @@ void process_packet(int user_id, char* buf)
 	}
 }
 
-void initialize_clients()
+void initialize_clients() // 멀티 스레드 이전 싱글 스레드에서 돌아감. 뮤텍스 필요 없음
 {
 	for (int i = 0; i < MAX_USER; ++i)
 	{
-		g_clients[i].m_bConnected = false;
+		g_clients[i].m_id = i;
+		g_clients[i].m_status = ST_FREE;
 	}
 }
 
 void disconnect(int user_id)
 {
-	g_clients[user_id].m_bConnected = false;
-	if(!g_clients[user_id].m_bConnected) --g_curr_user_id;
+	g_clients[user_id].m_cl.lock();
+	g_clients[user_id].m_status = ST_ALLOC;
+	//if(!g_clients[user_id].m_bConnected) --g_curr_user_id;
+	send_leave_packet(user_id, user_id);
+	closesocket(g_clients[user_id].m_socket);
 
 	for (auto& cl : g_clients)
 	{
-		if (true == g_clients[cl.m_id].m_bConnected)
-			send_leave_packet(cl.m_id, user_id);
+		if (user_id == cl.m_id) continue; // 그래도 send_leave_packet은 보내야 함
 
+		cl.m_cl.lock();
+		if (ST_ACTIVE == cl.m_status)
+			send_leave_packet(cl.m_id, user_id);
+		cl.m_cl.unlock();
 	}
+	g_clients[user_id].m_status = ST_FREE;
+	g_clients[user_id].m_cl.unlock();
 }
 
 void recv_packet_construct(int user_id, int io_byte) // io_byte는 dword이긴함
@@ -301,26 +324,43 @@ void worker_thread()
 				delete exover;
 			}
 			break;
-		case OP_ACCEPT:
+		case OP_ACCEPT: // 비동기 accept 하나만 실행. main에서 비동기 accept 하고 worker thread에서 완료를 하고 // 4.28 강의 두번째 3분
+						// 완료한 thread에서 accept할때까지 다른 thread는 완료 안됨. 따라서 싱글스레드로 진행이됨.
 		{
-			int user_id = g_curr_user_id++;
-			g_curr_user_id = g_curr_user_id % MAX_USER;
+			int user_id = -1;
+			for (int i = 0; i < MAX_USER; ++i)
+			{
+				lock_guard<mutex> gl{ g_clients[i].m_cl }; // unlcok 이 필요 없다. 블록에서 빠져나갈때 unlock 을 해줌, 루프를 매번 해줄때 unlock을 해주고 lock을 건다.
+				if (ST_FREE == g_clients[i].m_status) //  template 객체. 생성자 소멸자 호출할때 lock unlock 함. 함수 or 블록 부분에 사용하면 유용하다
+				{
+					g_clients[i].m_status = ST_ALLOC;
+					user_id = i;
+					break;
+				}
+			}
 
 			SOCKET	c_socket = exover->c_socket;
-			CreateIoCompletionPort(reinterpret_cast<HANDLE>(c_socket), g_iocp, user_id, 0);
 
-			CLIENT& NewClient = g_clients[user_id];
-			NewClient.m_id = user_id;
-			NewClient.m_prev_size = 0;
-			NewClient.m_recv_over.op = OP_RECV;
-			ZeroMemory(&NewClient.m_recv_over.over, sizeof(NewClient.m_recv_over.op));
-			NewClient.m_recv_over.wsabuf.buf = NewClient.m_recv_over.io_buf;
-			NewClient.m_recv_over.wsabuf.len = MAX_BUF_SIZE;
-			NewClient.m_socket = c_socket;
-			NewClient.x = rand() % WORLD_WIDTH;
-			NewClient.y = rand() % WORLD_HEIGHT;
-			DWORD flags = 0;
-			WSARecv(c_socket, &NewClient.m_recv_over.wsabuf, 1, NULL, &flags, &NewClient.m_recv_over.over, NULL);
+			if (-1 == user_id) //send_login_fail_packet;
+				closesocket(exover->c_socket);
+			else
+			{
+				CreateIoCompletionPort(reinterpret_cast<HANDLE>(c_socket), g_iocp, user_id, 0);
+
+				CLIENT& NewClient = g_clients[user_id];
+				NewClient.m_id = user_id;
+				NewClient.m_prev_size = 0;
+				NewClient.m_recv_over.op = OP_RECV;
+				ZeroMemory(&NewClient.m_recv_over.over, sizeof(NewClient.m_recv_over.op));
+				NewClient.m_recv_over.wsabuf.buf = NewClient.m_recv_over.io_buf;
+				NewClient.m_recv_over.wsabuf.len = MAX_BUF_SIZE;
+				NewClient.m_socket = c_socket;
+				NewClient.x = rand() % WORLD_WIDTH;
+				NewClient.y = rand() % WORLD_HEIGHT;
+
+				DWORD flags = 0;
+				WSARecv(c_socket, &NewClient.m_recv_over.wsabuf, 1, NULL, &flags, &NewClient.m_recv_over.over, NULL);
+			}
 
 			c_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 
@@ -332,7 +372,6 @@ void worker_thread()
 		}
 		break;
 		}
-
 	}
 }
 
