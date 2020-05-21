@@ -13,15 +13,54 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="소스 파일\Packet">
+      <UniqueIdentifier>{d1344ebc-148b-415b-836b-e8d340ee53e3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Packet\LoginPacket">
+      <UniqueIdentifier>{5953931e-c286-40c2-b419-47fb2ad55f3f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\PacketHandler">
+      <UniqueIdentifier>{2ac6ff90-a753-425f-afc0-1a626e5c9feb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Packet\MovePacket">
+      <UniqueIdentifier>{0b08d7b4-2c12-452b-ac3e-46fd1cbc0cd6}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\protocol.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="define.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Packet.h">
+      <Filter>소스 파일\Packet</Filter>
+    </ClInclude>
+    <ClInclude Include="LoginPacket.h">
+      <Filter>소스 파일\Packet\LoginPacket</Filter>
+    </ClInclude>
+    <ClInclude Include="PacketHandler.h">
+      <Filter>소스 파일\PacketHandler</Filter>
+    </ClInclude>
+    <ClInclude Include="MovePacket.h">
+      <Filter>소스 파일\Packet\MovePacket</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="IOCPServer.cpp">
       <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="Packet.cpp">
+      <Filter>소스 파일\Packet</Filter>
+    </ClCompile>
+    <ClCompile Include="LoginPacket.cpp">
+      <Filter>소스 파일\Packet\LoginPacket</Filter>
+    </ClCompile>
+    <ClCompile Include="PacketHandler.cpp">
+      <Filter>소스 파일\PacketHandler</Filter>
+    </ClCompile>
+    <ClCompile Include="MovePacket.cpp">
+      <Filter>소스 파일\Packet\MovePacket</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -4,6 +4,9 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <set>
+#include <unordered_set>
+
 #pragma comment (lib, "WS2_32.lib")
 #pragma comment (lib, "mswsock.lib")
 
@@ -12,10 +15,36 @@ using namespace std;
 #include "protocol.h"
 constexpr auto MAX_PACKET_SIZE = 255;
 constexpr auto MAX_BUF_SIZE = 2024;
-constexpr auto MAX_USER = 10;
+constexpr auto MAX_USER = 10000;
+
+constexpr auto MAX_ROW = 25;
+constexpr auto MAX_COL = 25;
+
+constexpr auto ROW_GAP = 16;
+constexpr auto COL_GAP = 16;
+
+constexpr auto SIGHT_RANGE = 11;
 
 enum ENUMOP { OP_RECV = 0, OP_SEND, OP_ACCEPT };
 enum C_STATUS {ST_FREE, ST_ALLOC, ST_ACTIVE };
+
+struct ViewList
+{
+	mutex						view_lock;
+	unordered_set<int>			viewlist;
+};
+
+struct NearList
+{
+	mutex						near_lock;
+	unordered_set<int>			nearlist;
+};
+
+struct RemoveList
+{
+	mutex						remove_lock;
+	unordered_set<int>			removelist;
+};
 
 struct EXOVER
 {
@@ -40,7 +69,26 @@ struct CLIENT
 
 	short		x, y;
 	char		name[MAX_ID_LEN + 1]; // 꽉차서 올수 있으므로 +1
+	unsigned	m_move_time;
+
+	short		row, col;
+	ViewList	m_viewlist;
+	NearList	m_nearlist;
+	RemoveList	m_removelist;
 };
+
+struct SECTOR
+{
+	mutex						sector_lock;
+	unordered_set<int>			m_setPlayerList;
+	short						m_StartX;
+	short						m_StartY;
+	short						m_EndX;
+	short						m_EndY;
+};
+
+
+SECTOR g_sectors[MAX_ROW][MAX_COL];
 
 CLIENT g_clients[MAX_USER];
 HANDLE g_iocp;
@@ -55,10 +103,149 @@ void process_packet(int user_id, char* buf);
 
 void enter_game(int user_id);
 void initialize_clients();
+void initialize_sectors();
 void disconnect(int user_id);
 void recv_packet_construct(int user_id, int io_byte);
 
 void worker_thread();
+
+void sector();
+void manage_sector_object();
+void create_nearlist(int user_id, int row, int col);
+void check_near_view(int id);
+bool is_near_check(int id1,int id2);
+
+void sector()
+{
+
+}
+
+void manage_sector_object()
+{
+
+}
+
+void create_nearlist(int user_id, int row, int col) // 나중에 지역변수로 할것 최적화 !
+{
+	g_sectors[row][col].sector_lock.lock();
+	for (auto& playerlist : g_sectors[row][col].m_setPlayerList){
+		g_clients[user_id].m_nearlist.near_lock.lock();
+		if (ST_ACTIVE == g_clients[user_id].m_status)
+		{
+			if (is_near_check(user_id, playerlist)) {
+				g_clients[user_id].m_nearlist.nearlist.emplace(playerlist);
+			}
+		}
+		g_clients[user_id].m_nearlist.near_lock.unlock();
+	}
+	g_sectors[row][col].sector_lock.unlock();
+}
+
+void check_near_view(int user_id)
+{
+	for (auto& nearlist : g_clients[user_id].m_nearlist.nearlist) // 모든 near객체에 대해서 
+	{
+		if (g_clients[user_id].m_viewlist.viewlist.find(nearlist) != g_clients[user_id].m_viewlist.viewlist.end()) // user의 viewlist에 있으면
+		{
+			if (g_clients[nearlist].m_viewlist.viewlist.find(user_id) != g_clients[nearlist].m_viewlist.viewlist.end()) // 상대방 viewlist에 있으면
+			{
+				//g_clients[nearlist].m_viewlist.view_lock.lock();
+				if (ST_ACTIVE == g_clients[nearlist].m_status)
+				{
+					send_move_packet(nearlist, user_id);
+				}
+				//g_clients[nearlist].m_viewlist.view_lock.unlock();
+			}
+			else // 상대방 viewlist에 없으면
+			{
+				g_clients[nearlist].m_viewlist.view_lock.unlock();
+				if (ST_ACTIVE == g_clients[nearlist].m_status)
+				{
+					g_clients[nearlist].m_viewlist.viewlist.emplace(user_id);
+					send_enter_packet(nearlist, user_id);
+				}
+				g_clients[nearlist].m_viewlist.view_lock.unlock();
+			}
+		}
+		else // user의 viewlist에 없으면
+		{
+			g_clients[user_id].m_viewlist.view_lock.lock(); // 체크
+			if (ST_ACTIVE == g_clients[user_id].m_status)
+			{
+				g_clients[user_id].m_viewlist.viewlist.emplace(nearlist);
+				send_enter_packet(user_id, nearlist);
+			}
+			g_clients[user_id].m_viewlist.view_lock.unlock();
+
+			if (g_clients[nearlist].m_viewlist.viewlist.find(user_id) != g_clients[nearlist].m_viewlist.viewlist.end()) // 상대방 viewlist에 있으면
+			{
+				//g_clients[nearlist].m_viewlist.view_lock.lock();
+				if (ST_ACTIVE == g_clients[nearlist].m_status)
+				{
+					send_move_packet(nearlist, user_id);
+				}
+				//g_clients[nearlist].m_viewlist.view_lock.unlock();
+			}
+			else // 상대방 viewlist에 없으면
+			{
+				g_clients[nearlist].m_viewlist.view_lock.lock();
+				if (ST_ACTIVE == g_clients[nearlist].m_status)
+				{
+					g_clients[nearlist].m_viewlist.viewlist.emplace(user_id);
+					send_enter_packet(nearlist, user_id);
+				}
+				g_clients[nearlist].m_viewlist.view_lock.unlock();
+			}
+		}
+	}
+
+	for (auto& viewlist : g_clients[user_id].m_viewlist.viewlist)
+	{
+		// nearlist 에서 viewlist를 못찾으면 viwwlist를 removelist 로 넣는다.
+		if (g_clients[user_id].m_nearlist.nearlist.find(viewlist) == g_clients[user_id].m_nearlist.nearlist.end()) 
+		{
+			g_clients[user_id].m_cl.lock();
+			g_clients[user_id].m_removelist.removelist.emplace(viewlist);
+			g_clients[user_id].m_cl.unlock();
+		}
+	}
+
+	for (auto& removelist : g_clients[user_id].m_removelist.removelist)
+	{
+		g_clients[user_id].m_viewlist.view_lock.lock();
+		if (ST_ACTIVE == g_clients[user_id].m_status)
+		{
+			g_clients[user_id].m_viewlist.viewlist.erase(removelist);
+			send_leave_packet(user_id, removelist);
+		}
+		g_clients[user_id].m_viewlist.view_lock.unlock();
+
+		if (g_clients[removelist].m_viewlist.viewlist.find(user_id) != g_clients[removelist].m_viewlist.viewlist.end())
+		{
+			g_clients[removelist].m_viewlist.view_lock.lock();
+			if (ST_ACTIVE == g_clients[removelist].m_status)
+			{
+				g_clients[removelist].m_viewlist.viewlist.erase(user_id);
+				send_leave_packet(removelist, user_id);
+			}
+			g_clients[removelist].m_viewlist.view_lock.unlock();
+		}
+	}
+
+	g_clients[user_id].m_nearlist.nearlist.clear();
+	g_clients[user_id].m_removelist.removelist.clear();
+}
+
+bool is_near_check(int id1, int id2)
+{
+	if(SIGHT_RANGE/2 < abs(g_clients[id1].x - g_clients[id2].x))
+		return false;
+	if (SIGHT_RANGE/2 < abs(g_clients[id1].y - g_clients[id2].y))
+		return false;
+
+	return true;
+}
+
 
 void do_move(int user_id, int direction)
 {
@@ -69,18 +256,18 @@ void do_move(int user_id, int direction)
 	switch (direction)
 	{
 	case D_UP:
-		if(y>0)	y--;
+		if (y > 0)	y--; // 0
 		break;
 	case D_DOWN:
-		if (y < WORLD_HEIGHT - 1) y++;
+		if (y < WORLD_HEIGHT - 1) y++; //
 		break;
 	case D_LEFT:
-		if (x > 0) x--;
+		if (x > 0) x--; // 
 		break;
 	case D_RIGHT:
-		if (x < WORLD_WIDTH - 1) x++;
+		if (x < WORLD_WIDTH - 1) x++; // 
 		break;
-	default :
+	default:
 		cout << "Unkown Direction from Client move packet!\n";
 		DebugBreak();
 		exit(-1);
@@ -89,15 +276,46 @@ void do_move(int user_id, int direction)
 	user.x = x;
 	user.y = y;
 
-	for (auto& clients : g_clients)
+	// user가 이전 섹터를 벗어나면 이전 섹터에서 지우고 새 섹터에 집어넣는다.
+	if (user.x / COL_GAP != user.col || user.y / ROW_GAP != user.row)
 	{
-		clients.m_cl.lock();
-		if (ST_ACTIVE == clients.m_status)
-		{
-			send_move_packet(clients.m_id, user_id);
-		}
-		clients.m_cl.unlock();
+		int iPrevCol = user.col;
+		int iPrevRow = user.row;
+
+		int iCol = user.x / COL_GAP;
+		int iRow = user.y / ROW_GAP;
+
+		if (iCol > 24)
+			iCol = iPrevCol;
+		if (iRow > 24)
+			iRow = iPrevRow;
+
+		g_sectors[iPrevRow][iPrevCol].sector_lock.lock();
+		g_sectors[iPrevRow][iPrevCol].m_setPlayerList.erase(user.m_id);
+		g_sectors[iPrevRow][iPrevCol].sector_lock.unlock();
+
+		g_sectors[iRow][iCol].sector_lock.lock();
+		g_sectors[iRow][iCol].m_setPlayerList.emplace(user.m_id);
+		user.row = iRow;
+		user.col = iCol;
+		g_sectors[iRow][iCol].sector_lock.unlock();
 	}
+
+	if (24 >= (user.x + SIGHT_RANGE / 2) / COL_GAP && 24 >= (user.y + SIGHT_RANGE / 2) / ROW_GAP)
+	{
+		for (int i = (user.x - SIGHT_RANGE / 2) / COL_GAP; i <= (user.x + SIGHT_RANGE / 2) / COL_GAP; ++i)
+		{
+			for (int j = (user.y - SIGHT_RANGE / 2) / ROW_GAP; j <= (user.y + SIGHT_RANGE / 2) / ROW_GAP; ++j)
+			{
+				if (i < 0) i = 0;
+				if (j < 0) j = 0;
+
+				create_nearlist(user_id, j, i);
+			}
+		}
+	}
+
+	check_near_view(user_id);
 }
 
 void send_packet(int user_id, void* packet)
@@ -140,6 +358,7 @@ void send_move_packet(int user_id, int mover)
 	packet.type = S2C_MOVE;
 	packet.x = g_clients[mover].x;
 	packet.y = g_clients[mover].y;
+	packet.move_time = g_clients[user_id].m_move_time;
 
 	send_packet(user_id, &packet);
 }
@@ -175,22 +394,22 @@ void enter_game(int user_id, char name[]) // lock 이중으로 했다가 문제 생김 // u
 	g_clients[user_id].name[MAX_ID_LEN] = NULL;
 	send_login_ok_packet(user_id);
 
-	for (int i = 0; i < MAX_USER; ++i)
-	{
-		if (user_id == i) // send_enter_packet 역시도 같음 // 내가 나한테 send enter packet을 보낼 이유가 없음
-			continue;
+	//for (int i = 0; i < MAX_USER; ++i)
+	//{
+	//	if (user_id == i) // send_enter_packet 역시도 같음 // 내가 나한테 send enter packet을 보낼 이유가 없음
+	//		continue;
 
-		g_clients[i].m_cl.lock();
-		if (ST_ACTIVE == g_clients[i].m_status)
-		{
-			if (i != user_id)
-			{
-				send_enter_packet(user_id, i);
-				send_enter_packet(i, user_id);
-			}
-		}
-		g_clients[i].m_cl.unlock();
-	}
+	//	g_clients[i].m_cl.lock();
+	//	if (ST_ACTIVE == g_clients[i].m_status)
+	//	{
+	//		if (i != user_id)
+	//		{
+	//			send_enter_packet(user_id, i);
+	//			send_enter_packet(i, user_id);
+	//		}
+	//	}
+	//	g_clients[i].m_cl.unlock();
+	//}
 	g_clients[user_id].m_cl.unlock();
 	g_clients[user_id].m_status = ST_ACTIVE;
 }
@@ -208,6 +427,7 @@ void process_packet(int user_id, char* buf)
 	case C2S_MOVE:
 	{
 		cs_packet_move* packet = reinterpret_cast<cs_packet_move*>(buf);
+		g_clients[user_id].m_move_time = packet->move_time;
 		do_move(user_id, packet->direction);
 	}
 	break;
@@ -226,6 +446,20 @@ void initialize_clients() // 멀티 스레드 이전 싱글 스레드에서 돌아감. 뮤텍스 필�
 	{
 		g_clients[i].m_id = i;
 		g_clients[i].m_status = ST_FREE;
+	}
+}
+
+void initialize_sectors()
+{
+	for (int i = 0; i < MAX_COL; ++i)
+	{
+		for (int j = 0; j < MAX_ROW; ++j)
+		{
+			g_sectors[j][i].m_StartX = i * 16;
+			g_sectors[j][i].m_StartY = j * 16;
+			g_sectors[j][i].m_EndX = (i + 1) * 16;
+			g_sectors[j][i].m_EndY = (j + 1) * 16;
+		}
 	}
 }
 
@@ -360,6 +594,13 @@ void worker_thread()
 
 				DWORD flags = 0;
 				WSARecv(c_socket, &NewClient.m_recv_over.wsabuf, 1, NULL, &flags, &NewClient.m_recv_over.over, NULL);
+
+				// sector에 집어 넣어준다.
+				short col = NewClient.x / COL_GAP;
+				short row = NewClient.y / ROW_GAP;
+				g_sectors[row][col].m_setPlayerList.emplace(NewClient.m_id);
+				NewClient.row = row;
+				NewClient.col = col;
 			}
 
 			c_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
@@ -401,6 +642,7 @@ int main()
 	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 
 	initialize_clients();
+	initialize_sectors();
 
 	CreateIoCompletionPort(reinterpret_cast<HANDLE>(l_socket), g_iocp, 999, 0); // 등록
 
