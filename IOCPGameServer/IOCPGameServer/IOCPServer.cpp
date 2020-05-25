@@ -1,462 +1,23 @@
-#include <iostream>
-#include <WS2tcpip.h>
-#include <MSWSock.h>
+#pragma once;
 #include <thread>
-#include <vector>
-#include <mutex>
-#include <set>
-#include <unordered_set>
-
-#pragma comment (lib, "WS2_32.lib")
-#pragma comment (lib, "mswsock.lib")
-
+#include "extern.h"
+#include "ViewProcessing.h"
+#include "PacketHandler.h"
 using namespace std;
 
 #include "protocol.h"
-constexpr auto MAX_PACKET_SIZE = 255;
-constexpr auto MAX_BUF_SIZE = 2024;
-constexpr auto MAX_USER = 10000;
 
-constexpr auto MAX_ROW = 25;
-constexpr auto MAX_COL = 25;
+SECTOR g_sectors[25][25];
+CLIENT g_clients[10000];
+NPC g_npcs[200000];
 
-constexpr auto ROW_GAP = 16;
-constexpr auto COL_GAP = 16;
-
-constexpr auto SIGHT_RANGE = 11;
-
-enum ENUMOP { OP_RECV = 0, OP_SEND, OP_ACCEPT };
-enum C_STATUS { ST_FREE, ST_ALLOC, ST_ACTIVE };
-
-struct ViewList
-{
-	unordered_set<int>			viewlist;
-};
-
-struct NearList
-{
-	unordered_set<int>			nearlist;
-};
-
-struct RemoveList
-{
-	unordered_set<int>			removelist;
-};
-
-struct EXOVER
-{
-	WSAOVERLAPPED	over;
-	ENUMOP			op;
-	char			io_buf[MAX_BUF_SIZE];
-	union {
-		WSABUF			wsabuf;
-		SOCKET			c_socket;
-	};
-};
-
-struct CLIENT
-{
-	mutex		m_cl;
-	SOCKET		m_socket;
-	int			m_id;
-	EXOVER		m_recv_over;
-	int			m_prev_size;
-	char		m_packet_buf[MAX_PACKET_SIZE];
-	C_STATUS	m_status;
-
-	short		x, y;
-	char		name[MAX_ID_LEN + 1]; // 꽉차서 올수 있으므로 +1
-	unsigned	m_move_time;
-
-	short		row, col;
-	ViewList	m_viewlist;
-	NearList	m_nearlist;
-	RemoveList	m_removelist;
-};
-
-struct SECTOR
-{
-	mutex						sector_lock;
-	unordered_set<int>			m_setPlayerList;
-	short						m_StartX;
-	short						m_StartY;
-	short						m_EndX;
-	short						m_EndY;
-};
-
-
-SECTOR g_sectors[MAX_ROW][MAX_COL];
-
-CLIENT g_clients[MAX_USER];
 HANDLE g_iocp;
 SOCKET l_socket;
 
-void send_move_packet(int user_id, int mover);
-void send_login_ok_packet(int user_id);
-void send_packet(int user_id, void* packet);
-void send_enter_packet(int user_id, int o_id);
-void send_leave_packet(int user_id, int o_id);
-void process_packet(int user_id, char* buf);
-
-void enter_game(int user_id);
 void initialize_clients();
 void initialize_sectors();
-void disconnect(int user_id);
-void recv_packet_construct(int user_id, int io_byte);
 
 void worker_thread();
-
-void sector();
-void manage_sector_object();
-void create_nearlist(int user_id, int row, int col);
-void check_near_view(int id);
-bool is_near_check(int id1, int id2);
-
-void sector()
-{
-
-}
-
-void manage_sector_object()
-{
-
-}
-
-void create_nearlist(int user_id, int row, int col) // 나중에 지역변수로 할것 최적화 !
-{
-	g_sectors[row][col].sector_lock.lock();
-	for (auto& playerlist : g_sectors[row][col].m_setPlayerList) {
-		//g_clients[user_id].m_cl.lock();
-		if (ST_ACTIVE == g_clients[user_id].m_status)
-		{
-			if (is_near_check(user_id, playerlist)) {
-				g_clients[user_id].m_nearlist.nearlist.emplace(playerlist);
-			}
-		}
-		//g_clients[user_id].m_cl.unlock();
-	}
-	g_sectors[row][col].sector_lock.unlock();
-}
-
-void check_near_view(int user_id)
-{
-	ViewList user_VL = g_clients[user_id].m_viewlist;
-	NearList user_NL = g_clients[user_id].m_nearlist;
-	RemoveList user_RL = g_clients[user_id].m_removelist;
-
-	for (auto& nearlist : g_clients[user_id].m_nearlist.nearlist) // 모든 near객체에 대해서 
-	{
-		ViewList near_VL = g_clients[nearlist].m_viewlist;
-
-		if (user_VL.viewlist.find(nearlist) != user_VL.viewlist.end()) // user의 viewlist에 있으면
-		{
-			if (near_VL.viewlist.find(user_id) != near_VL.viewlist.end()) // 상대방 viewlist에 있으면
-			{
-				//g_clients[nearlist].m_cl.lock();
-				if (ST_ACTIVE == g_clients[nearlist].m_status)
-				{
-					send_move_packet(nearlist, user_id);
-				}
-				//g_clients[nearlist].m_cl.unlock();
-			}
-			else // 상대방 viewlist에 없으면
-			{
-				//g_clients[nearlist].m_cl.unlock();
-				if (ST_ACTIVE == g_clients[nearlist].m_status)
-				{
-					near_VL.viewlist.emplace(user_id);
-					send_enter_packet(nearlist, user_id);
-				}
-				//g_clients[nearlist].m_cl.unlock();
-			}
-		}
-		else // user의 viewlist에 없으면
-		{
-			//g_clients[user_id].m_cl.lock(); // 체크
-			if (ST_ACTIVE == g_clients[user_id].m_status)
-			{
-				user_VL.viewlist.emplace(nearlist);
-				send_enter_packet(user_id, nearlist);
-			}
-			//g_clients[user_id].m_cl.unlock();
-
-			if (near_VL.viewlist.find(user_id) != near_VL.viewlist.end()) // 상대방 viewlist에 있으면
-			{
-				//g_clients[nearlist].m_cl.lock();
-				if (ST_ACTIVE == g_clients[nearlist].m_status)
-				{
-					send_move_packet(nearlist, user_id);
-				}
-				//g_clients[nearlist].m_cl.unlock();
-			}
-			else // 상대방 viewlist에 없으면
-			{
-				//g_clients[nearlist].m_cl.lock();
-				if (ST_ACTIVE == g_clients[nearlist].m_status)
-				{
-					near_VL.viewlist.emplace(user_id);
-					send_enter_packet(nearlist, user_id);
-				}
-				//g_clients[nearlist].m_cl.unlock();
-			}
-		}
-		g_clients[nearlist].m_cl.lock();
-		g_clients[nearlist].m_viewlist = near_VL;
-		g_clients[nearlist].m_cl.unlock();
-	}
-
-	for (auto& viewlist : user_VL.viewlist)
-	{
-		// nearlist 에서 viewlist를 못찾으면 viwwlist를 removelist 로 넣는다.
-		if (user_NL.nearlist.find(viewlist) == user_NL.nearlist.end())
-		{
-			//g_clients[user_id].m_cl.lock();
-			user_RL.removelist.emplace(viewlist);
-			//g_clients[user_id].m_cl.unlock();
-		}
-	}
-
-	for (auto& removelist : user_RL.removelist)
-	{
-		//g_clients[user_id].m_cl.lock();
-		if (ST_ACTIVE == g_clients[user_id].m_status)
-		{
-			user_VL.viewlist.erase(removelist);
-			send_leave_packet(user_id, removelist);
-		}
-		//g_clients[user_id].m_cl.unlock();
-
-		ViewList rmlist_VL = g_clients[removelist].m_viewlist;
-
-		if (rmlist_VL.viewlist.find(user_id) != rmlist_VL.viewlist.end())
-		{
-			//g_clients[removelist].m_cl.lock();
-			if (ST_ACTIVE == g_clients[removelist].m_status)
-			{
-				rmlist_VL.viewlist.erase(user_id);
-				send_leave_packet(removelist, user_id);
-			}
-			//g_clients[removelist].m_cl.unlock();
-		}
-
-		g_clients[removelist].m_cl.lock();
-		g_clients[removelist].m_viewlist = rmlist_VL;
-		g_clients[removelist].m_cl.unlock();
-	}
-
-	g_clients[user_id].m_cl.lock();
-	g_clients[user_id].m_viewlist = user_VL;
-	g_clients[user_id].m_cl.unlock();
-
-	g_clients[user_id].m_nearlist.nearlist.clear();
-	g_clients[user_id].m_removelist.removelist.clear();
-}
-
-bool is_near_check(int id1, int id2)
-{
-	if (SIGHT_RANGE / 2 < abs(g_clients[id1].x - g_clients[id2].x))
-		return false;
-	if (SIGHT_RANGE / 2 < abs(g_clients[id1].y - g_clients[id2].y))
-		return false;
-
-	return true;
-}
-
-
-void do_move(int user_id, int direction)
-{
-	CLIENT& user = g_clients[user_id];
-	int x = user.x;
-	int y = user.y;
-
-	switch (direction)
-	{
-	case D_UP:
-		if (y > 0)	y--; // 0
-		break;
-	case D_DOWN:
-		if (y < WORLD_HEIGHT - 1) y++; //
-		break;
-	case D_LEFT:
-		if (x > 0) x--; // 
-		break;
-	case D_RIGHT:
-		if (x < WORLD_WIDTH - 1) x++; // 
-		break;
-	default:
-		cout << "Unkown Direction from Client move packet!\n";
-		DebugBreak();
-		exit(-1);
-	}
-
-	user.x = x;
-	user.y = y;
-
-	// user가 이전 섹터를 벗어나면 이전 섹터에서 지우고 새 섹터에 집어넣는다.
-	if (user.x / COL_GAP != user.col || user.y / ROW_GAP != user.row)
-	{
-		int iPrevCol = user.col;
-		int iPrevRow = user.row;
-
-		int iCol = user.x / COL_GAP;
-		int iRow = user.y / ROW_GAP;
-
-		if (iCol > 24)
-			iCol = iPrevCol;
-		if (iRow > 24)
-			iRow = iPrevRow;
-
-		g_sectors[iPrevRow][iPrevCol].sector_lock.lock();
-		g_sectors[iPrevRow][iPrevCol].m_setPlayerList.erase(user.m_id);
-		g_sectors[iPrevRow][iPrevCol].sector_lock.unlock();
-
-		g_sectors[iRow][iCol].sector_lock.lock();
-		g_sectors[iRow][iCol].m_setPlayerList.emplace(user.m_id);
-		user.row = iRow;
-		user.col = iCol;
-		g_sectors[iRow][iCol].sector_lock.unlock();
-	}
-
-	if (24 >= (user.x + SIGHT_RANGE / 2) / COL_GAP && 24 >= (user.y + SIGHT_RANGE / 2) / ROW_GAP)
-	{
-		for (int i = (user.x - SIGHT_RANGE / 2) / COL_GAP; i <= (user.x + SIGHT_RANGE / 2) / COL_GAP; ++i)
-		{
-			for (int j = (user.y - SIGHT_RANGE / 2) / ROW_GAP; j <= (user.y + SIGHT_RANGE / 2) / ROW_GAP; ++j)
-			{
-				if (i < 0) i = 0;
-				if (j < 0) j = 0;
-
-				create_nearlist(user_id, j, i);
-			}
-		}
-	}
-	else
-		return;
-
-	check_near_view(user_id);
-}
-
-void send_packet(int user_id, void* packet)
-{
-	char* buf = reinterpret_cast<char*>(packet);
-
-	CLIENT& user = g_clients[user_id];
-
-	EXOVER* exover = new EXOVER; // recv에서 사용하고 있으므로 새로 할당해서 사용
-	exover->op = OP_SEND;
-	ZeroMemory(&exover->over, sizeof(exover->over));
-	exover->wsabuf.buf = exover->io_buf;
-	exover->wsabuf.len = buf[0];
-
-	memcpy(exover->io_buf, buf, buf[0]);
-
-	WSASend(user.m_socket, &exover->wsabuf, 1, NULL, 0, &exover->over, NULL);
-}
-
-void send_login_ok_packet(int user_id)
-{
-	sc_packet_login_ok packet;
-	packet.exp = 0;
-	packet.hp = 0;
-	packet.id = user_id;
-	packet.level = 0;
-	packet.size = sizeof(packet);
-	packet.type = S2C_LOGIN_OK;
-	packet.x = g_clients[user_id].x;
-	packet.y = g_clients[user_id].y;
-
-	send_packet(user_id, &packet);
-}
-
-void send_move_packet(int user_id, int mover)
-{
-	sc_packet_move packet;
-	packet.id = mover;
-	packet.size = sizeof(packet);
-	packet.type = S2C_MOVE;
-	packet.x = g_clients[mover].x;
-	packet.y = g_clients[mover].y;
-	packet.move_time = g_clients[user_id].m_move_time;
-
-	send_packet(user_id, &packet);
-}
-
-void send_enter_packet(int user_id, int o_id)
-{
-	sc_packet_enter packet;
-	packet.id = o_id;
-	packet.size = sizeof(packet);
-	packet.type = S2C_ENTER;
-	packet.x = g_clients[o_id].x;
-	packet.y = g_clients[o_id].y;
-	strcpy_s(packet.name, g_clients[o_id].name);
-	packet.o_type = O_PLAYER;
-
-	send_packet(user_id, &packet);
-}
-
-void send_leave_packet(int user_id, int o_id)
-{
-	sc_packet_leave packet;
-	packet.id = o_id;
-	packet.size = sizeof(packet);
-	packet.type = S2C_LEAVE;
-
-	send_packet(user_id, &packet);
-}
-
-void enter_game(int user_id, char name[]) // lock 이중으로 했다가 문제 생김 // userid에서 락걸고 i로 또 검. 같은 놈이 lock걸림 = 데드락// 락을 걸고 또 요청 -> 데드락
-{											// 따라서 lock 을 못 얻음
-	g_clients[user_id].m_cl.lock();
-	strcpy_s(g_clients[user_id].name, name);
-	g_clients[user_id].name[MAX_ID_LEN] = NULL;
-	send_login_ok_packet(user_id);
-
-	//for (int i = 0; i < MAX_USER; ++i)
-	//{
-	//	if (user_id == i) // send_enter_packet 역시도 같음 // 내가 나한테 send enter packet을 보낼 이유가 없음
-	//		continue;
-
-	//	g_clients[i].m_cl.lock();
-	//	if (ST_ACTIVE == g_clients[i].m_status)
-	//	{
-	//		if (i != user_id)
-	//		{
-	//			send_enter_packet(user_id, i);
-	//			send_enter_packet(i, user_id);
-	//		}
-	//	}
-	//	g_clients[i].m_cl.unlock();
-	//}
-	g_clients[user_id].m_cl.unlock();
-	g_clients[user_id].m_status = ST_ACTIVE;
-}
-
-void process_packet(int user_id, char* buf)
-{
-	switch (buf[1])
-	{
-	case C2S_LOGIN:
-	{
-		cs_packet_login* packet = reinterpret_cast<cs_packet_login*>(buf);
-		enter_game(user_id, packet->name);
-	}
-	break;
-	case C2S_MOVE:
-	{
-		cs_packet_move* packet = reinterpret_cast<cs_packet_move*>(buf);
-		g_clients[user_id].m_move_time = packet->move_time;
-		do_move(user_id, packet->direction);
-	}
-	break;
-	default:
-	{
-		cout << "Unkown packet type error!\n";
-		DebugBreak(); // 비쥬얼 스튜디오 상에서 멈추고 상태를 표시하라
-		exit(-1);
-	}
-	}
-}
 
 void initialize_clients() // 멀티 스레드 이전 싱글 스레드에서 돌아감. 뮤텍스 필요 없음
 {
@@ -481,62 +42,6 @@ void initialize_sectors()
 	}
 }
 
-void disconnect(int user_id)
-{
-	g_clients[user_id].m_cl.lock();
-	g_clients[user_id].m_status = ST_ALLOC;
-	//if(!g_clients[user_id].m_bConnected) --g_curr_user_id;
-	send_leave_packet(user_id, user_id);
-	closesocket(g_clients[user_id].m_socket);
-
-	for (auto& cl : g_clients)
-	{
-		if (user_id == cl.m_id) continue; // 그래도 send_leave_packet은 보내야 함
-
-		cl.m_cl.lock();
-		if (ST_ACTIVE == cl.m_status)
-			send_leave_packet(cl.m_id, user_id);
-		cl.m_cl.unlock();
-	}
-	g_clients[user_id].m_status = ST_FREE;
-	g_clients[user_id].m_cl.unlock();
-}
-
-void recv_packet_construct(int user_id, int io_byte) // io_byte는 dword이긴함
-{
-	CLIENT& cu = g_clients[user_id];
-	EXOVER& recv_overlapped = cu.m_recv_over;
-
-	int rest_byte = io_byte;
-	char* p = recv_overlapped.io_buf;
-
-	int packet_size = 0;
-
-	if (0 != cu.m_prev_size) packet_size = cu.m_packet_buf[0];
-
-	while (rest_byte > 0)
-	{
-		if (0 == packet_size) packet_size = *p;
-		if (packet_size <= rest_byte + cu.m_prev_size)
-		{
-			memcpy(cu.m_packet_buf + cu.m_prev_size, p, packet_size - cu.m_prev_size);
-			p += packet_size - cu.m_prev_size;
-			rest_byte -= packet_size - cu.m_prev_size;
-			packet_size = 0;
-			process_packet(user_id, cu.m_packet_buf);
-			cu.m_prev_size = 0;
-		}
-		else
-		{
-
-			memcpy(cu.m_packet_buf + cu.m_prev_size, p, rest_byte); // cu.m_packet_buf 이미 prev_size가 0이 아니라 그냥 쓰면 안됨
-			cu.m_prev_size += rest_byte;
-			rest_byte = 0;
-			p += rest_byte; // rest_byte가 0인데 += 의미가 잇나 위하고 바꿔야 할거같음
-		}
-	}
-}
-
 void worker_thread()
 {
 	while (true)
@@ -557,10 +62,10 @@ void worker_thread()
 		case OP_RECV:
 		{
 			if (0 == io_byte)
-				disconnect(user_id);
+				CPacketHandler::GetInst()->disconnect(user_id);
 			else
 			{
-				recv_packet_construct(user_id, io_byte);
+				CPacketHandler::GetInst()->recv_packet_construct(user_id, io_byte);
 				//process_packet(user_id, exover->io_buf);
 				ZeroMemory(&cl.m_recv_over.over, sizeof(cl.m_recv_over.op));
 				DWORD flags = 0;
@@ -570,7 +75,7 @@ void worker_thread()
 		break;
 		case OP_SEND:
 			if (0 == io_byte)
-				disconnect(user_id);
+				CPacketHandler::GetInst()->disconnect(user_id);
 			else
 			{
 				delete exover;
@@ -636,6 +141,8 @@ void worker_thread()
 
 int main()
 {
+	wcout.imbue(locale("korean"));
+
 	WSADATA WSAData;
 	WSAStartup(MAKEWORD(2, 2), &WSAData);
 
@@ -677,4 +184,6 @@ int main()
 	vector<thread> worker_threads;
 	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(worker_thread);
 	for (auto& threads : worker_threads) threads.join();
+
+	//CloseHandle(g_iocp); // 추가
 }

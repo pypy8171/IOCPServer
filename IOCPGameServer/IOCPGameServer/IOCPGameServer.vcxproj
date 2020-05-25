@@ -140,10 +140,12 @@
   <ItemGroup>
     <ClInclude Include="..\protocol.h" />
     <ClInclude Include="define.h" />
+    <ClInclude Include="extern.h" />
     <ClInclude Include="LoginPacket.h" />
     <ClInclude Include="MovePacket.h" />
     <ClInclude Include="Packet.h" />
     <ClInclude Include="PacketHandler.h" />
+    <ClInclude Include="ViewProcessing.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="LoginPacket.cpp" />
@@ -151,6 +153,7 @@
     <ClCompile Include="Packet.cpp" />
     <ClCompile Include="IOCPServer.cpp" />
     <ClCompile Include="PacketHandler.cpp" />
+    <ClCompile Include="ViewProcessing.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -25,6 +25,9 @@
     <Filter Include="소스 파일\Packet\MovePacket">
       <UniqueIdentifier>{0b08d7b4-2c12-452b-ac3e-46fd1cbc0cd6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\View">
+      <UniqueIdentifier>{66a0eee7-fe85-4f06-8662-5d42437fa540}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\protocol.h">
@@ -45,6 +48,12 @@
     <ClInclude Include="MovePacket.h">
       <Filter>소스 파일\Packet\MovePacket</Filter>
     </ClInclude>
+    <ClInclude Include="ViewProcessing.h">
+      <Filter>소스 파일\View</Filter>
+    </ClInclude>
+    <ClInclude Include="extern.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="IOCPServer.cpp">
@@ -61,6 +70,9 @@
     </ClCompile>
     <ClCompile Include="MovePacket.cpp">
       <Filter>소스 파일\Packet\MovePacket</Filter>
+    </ClCompile>
+    <ClCompile Include="ViewProcessing.cpp">
+      <Filter>소스 파일\View</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

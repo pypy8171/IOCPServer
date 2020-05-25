@@ -1,7 +1,31 @@
 #pragma once
+#include <iostream>
+
+
+#include <unordered_set>
+#include <mutex>
+#include <map>
+#include <set>
+#include <vector>
+
+
+using namespace std;
 
 constexpr int MAX_ID_LEN = 50;
 constexpr int MAX_STR_LEN = 255;
+
+constexpr auto MAX_PACKET_SIZE = 255;
+constexpr auto MAX_BUF_SIZE = 255;
+constexpr auto MAX_USER = 10000;
+
+constexpr auto MAX_ROW = 25;
+constexpr auto MAX_COL = 25;
+
+constexpr auto ROW_GAP = 16;
+constexpr auto COL_GAP = 16;
+
+constexpr auto SIGHT_RANGE = 11;
+constexpr int MAX_NPC = 200000;
 
 #define WORLD_WIDTH		400
 #define WORLD_HEIGHT	400
@@ -15,6 +39,24 @@ constexpr int MAX_STR_LEN = 255;
 #define S2C_MOVE			2
 #define S2C_ENTER			3
 #define S2C_LEAVE			4
+
+//enum class MON_TYPE{PEACE, ARGO};
+enum C_STATUS { ST_FREE, ST_ALLOC, ST_ACTIVE };
+
+struct ViewList
+{
+	unordered_set<int>			viewlist;
+};
+
+struct NearList
+{
+	unordered_set<int>			nearlist;
+};
+
+struct RemoveList
+{
+	unordered_set<int>			removelist;
+};
 
 #pragma pack(push ,1)
 
