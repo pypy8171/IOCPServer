@@ -95,9 +95,31 @@ void CPacketHandler::enter_game(int user_id, char name[])
 	strcpy_s(g_clients[user_id].name, name);
 	g_clients[user_id].name[MAX_ID_LEN] = NULL;
 	send_login_ok_packet(user_id);
-
+	g_clients[user_id].m_status = ST_ACTIVE; // 교수님 코드 deadlock 때문에 위치 바꿈
 	g_clients[user_id].m_cl.unlock();
-	g_clients[user_id].m_status = ST_ACTIVE;
+
+	// 교수님 코드
+	for (int i = 0; i < MAX_USER; ++i)
+	{
+		if (user_id == i) continue;
+		if (false == CViewProcessing::GetInst()->is_near_check(user_id, i))
+		{
+			//g_clients[i].m_cl.lock();
+			if (ST_ACTIVE == g_clients[i].m_status) // 다른 스레드들이 종료하고 active를 건드려야 한다. 문제가 생기면 수정한다고 하심. 필요한 것임.
+			{
+				if (user_id != i)
+				{
+					send_enter_packet(user_id, i);
+					send_enter_packet(i, user_id);
+				}
+			}
+			//g_clients[i].m_cl.unlock();
+		}
+	}
+	
+
+	//g_clients[user_id].m_status = ST_ACTIVE;
+	//g_clients[user_id].m_cl.unlock();
 
 }
 
@@ -127,6 +149,12 @@ void CPacketHandler::send_enter_packet(int user_id, int o_id)
 	strcpy_s(packet.name, g_clients[o_id].name);
 	packet.o_type = O_PLAYER;
 
+	// 교수님 코드
+	g_clients[user_id].m_cl.lock();
+	g_clients[user_id].m_viewlist.viewlist.emplace(o_id);
+	g_clients[user_id].m_cl.unlock();
+	//
+
 	send_packet(user_id, &packet);
 }
 
@@ -137,25 +165,31 @@ void CPacketHandler::send_leave_packet(int user_id, int o_id)
 	packet.size = sizeof(packet);
 	packet.type = S2C_LEAVE;
 
+	// 교수님 코드
+	g_clients[user_id].m_cl.lock();
+	g_clients[user_id].m_viewlist.viewlist.erase(o_id);
+	g_clients[user_id].m_cl.unlock();
+	
+
 	send_packet(user_id, &packet);
 }
 
 void CPacketHandler::disconnect(int user_id)
 {
+	send_leave_packet(user_id, user_id);
 	g_clients[user_id].m_cl.lock();
 	g_clients[user_id].m_status = ST_ALLOC;
 	//if(!g_clients[user_id].m_bConnected) --g_curr_user_id;
-	send_leave_packet(user_id, user_id);
 	closesocket(g_clients[user_id].m_socket);
 
 	for (auto& cl : g_clients)
 	{
 		if (user_id == cl.m_id) continue; // 그래도 send_leave_packet은 보내야 함
 
-		cl.m_cl.lock();
+		//cl.m_cl.lock(); // 교수님 주석 검.
 		if (ST_ACTIVE == cl.m_status)
 			send_leave_packet(cl.m_id, user_id);
-		cl.m_cl.unlock();
+		//cl.m_cl.unlock(); // 교수님 주석 검.
 	}
 	g_clients[user_id].m_status = ST_FREE;
 	g_clients[user_id].m_cl.unlock();
@@ -215,9 +249,9 @@ void CPacketHandler::do_move(int user_id, int direction)
 		g_sectors[iRow][iCol].sector_lock.unlock();
 	}
 
-	for (int i = (user.x - SIGHT_RANGE / 2) / COL_GAP; i <= (user.x + SIGHT_RANGE / 2) / COL_GAP; ++i)
+	for (int i = (user.x - VIEW_RADIUS / 2) / COL_GAP; i <= (user.x + VIEW_RADIUS / 2) / COL_GAP; ++i)
 	{
-		for (int j = (user.y - SIGHT_RANGE / 2) / ROW_GAP; j <= (user.y + SIGHT_RANGE / 2) / ROW_GAP; ++j)
+		for (int j = (user.y - VIEW_RADIUS / 2) / ROW_GAP; j <= (user.y + VIEW_RADIUS / 2) / ROW_GAP; ++j)
 		{
 			int iCol = -1;
 			int iRow = -1;
@@ -236,6 +270,11 @@ void CPacketHandler::do_move(int user_id, int direction)
 	}
 
 	CViewProcessing::GetInst()->check_near_view(user_id);
+
+
+
+
+	//CViewProcessing::GetInst()->check_near_view(user_id);
 }
 
 void CPacketHandler::send_move_packet(int user_id, int mover)
@@ -250,3 +289,17 @@ void CPacketHandler::send_move_packet(int user_id, int mover)
 
 	send_packet(user_id, &packet);
 }
+
+
+    //
+	//for (auto& cl : g_clients)
+	//{
+	//	if (ST_ACTIVE != cl.m_status) continue;
+	//	if (cl.m_id == user_id) continue;
+	//	if (CViewProcessing::GetInst()->is_near_check(cl.m_id, user_id))
+	//	{
+	//		new_vl.emplace(cl.m_id);
+	//	}
+	//}
+	//send_move_packet(user_id, user_id); // viewlist에서 나한테 나를 알려주지 않음. // 내가 짠 코드 거리비교해서 나도 들어 있으면 나도 추가됨.
+	//

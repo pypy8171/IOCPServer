@@ -1,11 +1,10 @@
 #pragma once;
-#include <thread>
 #include "extern.h"
 #include "ViewProcessing.h"
 #include "PacketHandler.h"
-using namespace std;
 
-#include "protocol.h"
+#include <thread>
+
 
 SECTOR g_sectors[25][25];
 CLIENT g_clients[10000];
@@ -25,6 +24,7 @@ void initialize_clients() // 멀티 스레드 이전 싱글 스레드에서 돌아감. 뮤텍스 필�
 	{
 		g_clients[i].m_id = i;
 		g_clients[i].m_status = ST_FREE;
+		InitializeSRWLock(&g_clients[i].m_viewlist.rwlock);
 	}
 }
 
@@ -112,6 +112,7 @@ void worker_thread()
 				NewClient.m_recv_over.wsabuf.buf = NewClient.m_recv_over.io_buf;
 				NewClient.m_recv_over.wsabuf.len = MAX_BUF_SIZE;
 				NewClient.m_socket = c_socket;
+				NewClient.m_viewlist.viewlist.clear();
 				NewClient.x = rand() % WORLD_WIDTH;
 				NewClient.y = rand() % WORLD_HEIGHT;
 
