@@ -12,8 +12,8 @@ using namespace chrono;
 
 sf::TcpSocket g_socket;
 
-constexpr auto SCREEN_WIDTH = 16;
-constexpr auto SCREEN_HEIGHT = 16;
+constexpr auto SCREEN_WIDTH = 20;
+constexpr auto SCREEN_HEIGHT = 20;
 
 constexpr auto TILE_WIDTH = 65;
 constexpr auto WINDOW_WIDTH = TILE_WIDTH * SCREEN_WIDTH /2 + 10;   // size of window
@@ -182,7 +182,10 @@ void ProcessPacket(char* ptr)
 		}
 		else {
 			if (0 != npcs.count(other_id))
+			{
 				npcs[other_id].move(my_packet->x, my_packet->y);
+				//npcs[other_id].show();
+			}
 		}
 	}
 	break;
@@ -333,7 +336,7 @@ int main()
 		sf::Event event;
 		while (window.pollEvent(event))
 		{
-			if (event.type == sf::Event::Closed)
+			if (event.type == sf::Event::Closed)	
 				window.close();
 			if (event.type == sf::Event::KeyPressed) {
 				int p_type = -1;

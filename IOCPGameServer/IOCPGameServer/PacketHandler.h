@@ -1,6 +1,6 @@
 #pragma once
 #include "define.h"
-#include "protocol.h"
+#include "extern.h"
 
 class CPacketHandler
 {
@@ -18,6 +18,7 @@ public:
 	void send_move_packet(int user_id, int mover);
 
 	void do_move(int user_id, int direction);
+	void npc_move(int id, ENUMOP op);
 
 public:
 	SINGLE(CPacketHandler);

@@ -1,7 +1,6 @@
 #pragma once;
 #include "PacketHandler.h"
 #include "ViewProcessing.h"
-#include "extern.h"
 
 CPacketHandler::CPacketHandler()
 {
@@ -95,14 +94,27 @@ void CPacketHandler::enter_game(int user_id, char name[])
 	strcpy_s(g_clients[user_id].name, name);
 	g_clients[user_id].name[MAX_ID_LEN] = NULL;
 	send_login_ok_packet(user_id);
-	g_clients[user_id].m_status = ST_ACTIVE; // 교수님 코드 deadlock 때문에 위치 바꿈
+	g_clients[user_id].m_status = ST_ACTIVE; // deadlock 때문에 위치 바꿈
+	g_mapCL.emplace(make_pair(user_id, &g_clients[user_id])); // 나중에 사용
 	g_clients[user_id].m_cl.unlock();
+
+	CViewProcessing::GetInst()->create_nearlist(g_clients[user_id].m_id, (g_clients[user_id].y - VIEW_RADIUS / 2) / ROW_GAP,
+		(g_clients[user_id].x - VIEW_RADIUS / 2) / COL_GAP, (g_clients[user_id].y + VIEW_RADIUS / 2) / ROW_GAP, (g_clients[user_id].x + VIEW_RADIUS / 2) / COL_GAP);
+	
+	g_clients[user_id].m_cl.lock(); //하나
+	unordered_set<int> nr = g_clients[user_id].m_nearlist.nearlist;
+	g_clients[user_id].m_cl.unlock();
+	for (auto& near_vl : nr)
+	{
+		if (user_id == near_vl) continue;
+		CPacketHandler::GetInst()->send_enter_packet(g_clients[user_id].m_id, near_vl);
+	}
 
 	// 교수님 코드
 	for (int i = 0; i < MAX_USER; ++i)
 	{
 		if (user_id == i) continue;
-		if (false == CViewProcessing::GetInst()->is_near_check(user_id, i))
+		if (false == CViewProcessing::GetInst()->is_near_check_pp(user_id, i))
 		{
 			//g_clients[i].m_cl.lock();
 			if (ST_ACTIVE == g_clients[i].m_status) // 다른 스레드들이 종료하고 active를 건드려야 한다. 문제가 생기면 수정한다고 하심. 필요한 것임.
@@ -116,11 +128,6 @@ void CPacketHandler::enter_game(int user_id, char name[])
 			//g_clients[i].m_cl.unlock();
 		}
 	}
-	
-
-	//g_clients[user_id].m_status = ST_ACTIVE;
-	//g_clients[user_id].m_cl.unlock();
-
 }
 
 void CPacketHandler::send_login_ok_packet(int user_id)
@@ -144,16 +151,54 @@ void CPacketHandler::send_enter_packet(int user_id, int o_id)
 	packet.id = o_id;
 	packet.size = sizeof(packet);
 	packet.type = S2C_ENTER;
-	packet.x = g_clients[o_id].x;
-	packet.y = g_clients[o_id].y;
-	strcpy_s(packet.name, g_clients[o_id].name);
-	packet.o_type = O_PLAYER;
 
+	if (o_id < NPC_START_IDX)
+	{
+		packet.x = g_clients[o_id].x;
+		packet.y = g_clients[o_id].y;
+		strcpy_s(packet.name, g_clients[o_id].name);
+		packet.o_type = O_PLAYER;
+
+	}
+	else
+	{
+		int idx = o_id - NPC_START_IDX; // npc mover는 npc idx가 아니라 id값으로 옴 + 10000인 상태
+		g_npcs[idx].m_Status = S_ACTIVE;
+		
+		packet.x = g_npcs[idx].x;
+		packet.y = g_npcs[idx].y;
+		sprintf_s(packet.name, "N%03d", o_id % 200000); // 아이디 배정
+		
+		packet.o_type = O_NPC;
+	}
 	// 교수님 코드
 	g_clients[user_id].m_cl.lock();
 	g_clients[user_id].m_viewlist.viewlist.emplace(o_id);
 	g_clients[user_id].m_cl.unlock();
 	//
+
+	send_packet(user_id, &packet);
+}
+
+
+void CPacketHandler::send_move_packet(int user_id, int mover)
+{
+	sc_packet_move packet;
+	packet.id = mover;
+	packet.size = sizeof(packet);
+	packet.type = S2C_MOVE;
+	if (mover < NPC_START_IDX)
+	{
+		packet.x = g_clients[mover].x;
+		packet.y = g_clients[mover].y;
+		packet.move_time = g_clients[user_id].m_move_time;
+	}
+	else
+	{
+		int idx = mover - NPC_START_IDX; // npc mover는 npc idx가 아니라 id값으로 옴 + 10000인 상태
+		packet.x = g_npcs[idx].x;
+		packet.y = g_npcs[idx].y;
+	}
 
 	send_packet(user_id, &packet);
 }
@@ -165,7 +210,9 @@ void CPacketHandler::send_leave_packet(int user_id, int o_id)
 	packet.size = sizeof(packet);
 	packet.type = S2C_LEAVE;
 
-	// 교수님 코드
+	
+	if (o_id >= NPC_START_IDX) g_npcs[o_id - NPC_START_IDX].m_Status = S_NONACTIVE;
+	
 	g_clients[user_id].m_cl.lock();
 	g_clients[user_id].m_viewlist.viewlist.erase(o_id);
 	g_clients[user_id].m_cl.unlock();
@@ -186,11 +233,15 @@ void CPacketHandler::disconnect(int user_id)
 	{
 		if (user_id == cl.m_id) continue; // 그래도 send_leave_packet은 보내야 함
 
-		//cl.m_cl.lock(); // 교수님 주석 검.
+		//cl.m_cl.lock(); // 주석
 		if (ST_ACTIVE == cl.m_status)
 			send_leave_packet(cl.m_id, user_id);
-		//cl.m_cl.unlock(); // 교수님 주석 검.
+		//cl.m_cl.unlock(); // 주석
 	}
+
+	//나갈때 뷰리스트에 있던 npc들 nonactive로 해야할 듯 // leave에서 해줌
+
+	g_mapCL.erase(user_id); //나중에 사용
 	g_clients[user_id].m_status = ST_FREE;
 	g_clients[user_id].m_cl.unlock();
 }
@@ -249,46 +300,95 @@ void CPacketHandler::do_move(int user_id, int direction)
 		g_sectors[iRow][iCol].sector_lock.unlock();
 	}
 
-	for (int i = (user.x - VIEW_RADIUS / 2) / COL_GAP; i <= (user.x + VIEW_RADIUS / 2) / COL_GAP; ++i)
-	{
-		for (int j = (user.y - VIEW_RADIUS / 2) / ROW_GAP; j <= (user.y + VIEW_RADIUS / 2) / ROW_GAP; ++j)
-		{
-			int iCol = -1;
-			int iRow = -1;
 
-			iCol = i;
-			iRow = j;
-
-			if (iCol < 0) iCol = 0;
-			if (iRow < 0) iRow = 0;
-
-			if (iCol > 24)	iCol = 24;
-			if (iRow > 24) iRow = 24;
-
-			CViewProcessing::GetInst()->create_nearlist(user_id, iRow, iCol);
-		}
-	}
+	CViewProcessing::GetInst()->create_nearlist(user_id, (user.y - VIEW_RADIUS / 2) / ROW_GAP, 
+		(user.x - VIEW_RADIUS / 2) / COL_GAP, (user.y + VIEW_RADIUS / 2) / ROW_GAP, (user.x + VIEW_RADIUS / 2) / COL_GAP);
+	
 
 	CViewProcessing::GetInst()->check_near_view(user_id);
-
-
-
-
-	//CViewProcessing::GetInst()->check_near_view(user_id);
 }
 
-void CPacketHandler::send_move_packet(int user_id, int mover)
-{
-	sc_packet_move packet;
-	packet.id = mover;
-	packet.size = sizeof(packet);
-	packet.type = S2C_MOVE;
-	packet.x = g_clients[mover].x;
-	packet.y = g_clients[mover].y;
-	packet.move_time = g_clients[user_id].m_move_time;
+void CPacketHandler::npc_move(int id, ENUMOP op) // a*알고리즘 사용시 각 타일마다 possess되어있는지 확인한다.  
+{												// 길 찾는 비용이 어느정도인지 아직 모르니
+	int npcIdx = id - NPC_START_IDX;
+	NPC& npc = g_npcs[npcIdx];
 
-	send_packet(user_id, &packet);
+	switch (op)
+	{
+	case OP_AIMOVE:
+	{
+		int dir = rand() % 4;
+		switch (dir)
+		{
+		case D_UP: if(npc.y>0) npc.y--;break;
+		case D_DOWN:if(npc.y< WORLD_HEIGHT - 1) npc.y++; break;
+		case D_LEFT: if (npc.x > 0) npc.x--; break;
+		case D_RIGHT: if(npc.x < WORLD_WIDTH - 1) npc.x++;	break;
+		}
+
+		// client 시야에 들어오면 viewlist에 넣어준다. 그 전에 nearlist에 넣어준다.
+		if (g_npcs[npcIdx].x / COL_GAP != g_npcs[npcIdx].col || g_npcs[npcIdx].y / ROW_GAP != g_npcs[npcIdx].row)
+		{
+			int iPrevCol = g_npcs[npcIdx].col;
+			int iPrevRow = g_npcs[npcIdx].row;
+
+			int iCol = g_npcs[npcIdx].x / COL_GAP;
+			int iRow = g_npcs[npcIdx].y / ROW_GAP;
+
+			if (iCol > MAX_COL - 1)
+				iCol = iPrevCol;
+			if (iRow > MAX_ROW - 1)
+				iRow = iPrevRow;
+
+			g_sectors[iPrevRow][iPrevCol].sector_lock.lock();
+			g_sectors[iPrevRow][iPrevCol].m_setNpcList.erase(g_npcs[npcIdx].m_id); // npc의 인덱스를 넣어줌.
+			g_sectors[iPrevRow][iPrevCol].sector_lock.unlock();
+
+			g_sectors[iRow][iCol].sector_lock.lock();
+			g_sectors[iRow][iCol].m_setNpcList.emplace(g_npcs[npcIdx].m_id);
+			g_npcs[npcIdx].row = iRow;
+			g_npcs[npcIdx].col = iCol;
+			g_sectors[iRow][iCol].sector_lock.unlock();
+		}
+
+		for (auto& cl : g_mapCL)
+		{
+			if (cl.second->m_status != ST_ACTIVE)
+				continue;
+		
+			if (((cl.second->y - VIEW_RADIUS / 2) / ROW_GAP == g_npcs[npcIdx].row || (cl.second->y + VIEW_RADIUS / 2) / ROW_GAP == g_npcs[npcIdx].row)
+				&& ((cl.second->x - VIEW_RADIUS / 2) / COL_GAP == g_npcs[npcIdx].col || (cl.second->x + VIEW_RADIUS / 2) / COL_GAP == g_npcs[npcIdx].col))
+			{
+				CViewProcessing::GetInst()->create_nearlist(cl.second->m_id, (cl.second->y - VIEW_RADIUS / 2) / ROW_GAP, (cl.second->x - VIEW_RADIUS / 2) / COL_GAP,
+					(cl.second->y + VIEW_RADIUS / 2) / ROW_GAP, (cl.second->x + VIEW_RADIUS / 2) / COL_GAP);
+		
+				CViewProcessing::GetInst()->check_near_view(cl.second->m_id);
+			}
+		}
+		addtimer(npcIdx + NPC_START_IDX, ENUMOP::OP_AIMOVE, 1000);
+		break;
+	}
+	break;
+	}
+
+
+
 }
+
+//for (auto& cl : g_clients)
+//{
+//	if (cl.m_status != ST_ACTIVE)
+//		continue;
+//
+//	if (((cl.y - VIEW_RADIUS / 2) / ROW_GAP == g_npcs[npcIdx].row || (cl.y + VIEW_RADIUS / 2) / ROW_GAP == g_npcs[npcIdx].row)
+//		&& ((cl.x - VIEW_RADIUS / 2) / COL_GAP == g_npcs[npcIdx].col || (cl.x + VIEW_RADIUS / 2) / COL_GAP == g_npcs[npcIdx].col))
+//	{
+//		CViewProcessing::GetInst()->create_nearlist(cl.m_id, (cl.y - VIEW_RADIUS / 2) / ROW_GAP, (cl.x - VIEW_RADIUS / 2) / COL_GAP,
+//			(cl.y + VIEW_RADIUS / 2) / ROW_GAP, (cl.x + VIEW_RADIUS / 2) / COL_GAP);
+//
+//		CViewProcessing::GetInst()->check_near_view(cl.m_id);
+//	}
+//}
 
 
     //

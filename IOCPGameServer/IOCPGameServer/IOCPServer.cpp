@@ -4,19 +4,37 @@
 #include "PacketHandler.h"
 
 #include <thread>
+#include <chrono>
 
+using namespace chrono;
 
-SECTOR g_sectors[25][25];
-CLIENT g_clients[10000];
-NPC g_npcs[200000];
+SECTOR g_sectors[MAX_ROW][MAX_COL];
+CLIENT g_clients[MAX_USER];
+unordered_map<int, CLIENT*> g_mapCL;
+NPC g_npcs[MAX_NPC];
+
+priority_queue<Event_Type, vector<Event_Type>, Compare > timer_queue;
+mutex timer_lock;
 
 HANDLE g_iocp;
 SOCKET l_socket;
 
 void initialize_clients();
+void initialzie_npcs();
 void initialize_sectors();
 
 void worker_thread();
+
+void addtimer(int id, ENUMOP op, unsigned int timer)
+{
+	Event_Type eventtype;
+	eventtype.obj_id = id; // m_id인 10000부터 들어감
+	eventtype.event_id = op;
+	eventtype.wakeup_time = GetCurrentTime() + timer;
+	timer_lock.lock();
+	timer_queue.emplace(eventtype);
+	timer_lock.unlock();
+}
 
 void initialize_clients() // 멀티 스레드 이전 싱글 스레드에서 돌아감. 뮤텍스 필요 없음
 {
@@ -34,11 +52,60 @@ void initialize_sectors()
 	{
 		for (int j = 0; j < MAX_ROW; ++j)
 		{
-			g_sectors[j][i].m_StartX = i * 16;
-			g_sectors[j][i].m_StartY = j * 16;
-			g_sectors[j][i].m_EndX = (i + 1) * 16;
-			g_sectors[j][i].m_EndY = (j + 1) * 16;
+			g_sectors[j][i].m_StartX = i * COL_GAP;
+			g_sectors[j][i].m_StartY = j * ROW_GAP;
+			g_sectors[j][i].m_EndX = (i + 1) * COL_GAP;
+			g_sectors[j][i].m_EndY = (j + 1) * ROW_GAP;
 		}
+	}
+}
+
+void initialzie_npcs()
+{
+	for (int i = 0; i < MAX_NPC; ++i)
+	{
+		g_npcs[i].m_id = i + NPC_START_IDX;
+		g_npcs[i].m_Status = NPC_STATUS::S_NONACTIVE;
+		g_npcs[i].x = rand() % WORLD_WIDTH;
+		g_npcs[i].y = rand() % WORLD_HEIGHT;
+
+		addtimer(g_npcs[i].m_id, ENUMOP::OP_AIMOVE, 1000);
+
+		g_npcs[i].row = g_npcs[i].y / ROW_GAP;
+		g_npcs[i].col = g_npcs[i].x / COL_GAP;
+		g_sectors[g_npcs[i].row][g_npcs[i].col].m_setNpcList.emplace(g_npcs[i].m_id); // npc 삽입
+	}
+}
+
+void timer() // 스레드 
+{
+	while (true)
+	{
+		Sleep(1); // 멀티쓰레드 동작이 원활하게 되도록
+		timer_lock.lock();
+		while (!timer_queue.empty())
+		{
+			if (timer_queue.top().wakeup_time > GetCurrentTime())
+				break;
+			
+			Event_Type t_event = timer_queue.top();
+			timer_queue.pop();
+			timer_lock.unlock(); // 큐에서 빼기전까지 lock
+
+			// 아래구조 문제 - 다른 클라 viewlist에 들어있는 npc들은 이미 active상태임 // 의미없이 ai까지 호출함
+			if (g_npcs[t_event.obj_id - NPC_START_IDX].m_Status != S_ACTIVE)
+				addtimer(t_event.obj_id, ENUMOP::OP_AIMOVE, 1000);
+			else
+			{
+				EXOVER* exover = new EXOVER; 
+				exover->op = OP_AIMOVE;
+
+				PostQueuedCompletionStatus(g_iocp, 0, t_event.obj_id, &exover->over);// 어차피 getqueuedcompletionstatus 값 그대로 들어옴
+			}
+
+			timer_lock.lock(); // 위에 unlock을 했으므로 lock
+		}
+		timer_lock.unlock();
 	}
 }
 
@@ -59,6 +126,12 @@ void worker_thread()
 
 		switch (exover->op)
 		{
+		case OP_AIMOVE:
+		{
+			CPacketHandler::GetInst()->npc_move(static_cast<int>(key), exover->op); // a*는 여기서 돌아간다. // 여기서 key는 npc id
+			delete exover; // 어차피 send할때 delete 하니까 여기서 안해줘도 될듯. -> 성능차이 남
+		}
+		break;
 		case OP_RECV:
 		{
 			if (0 == io_byte)
@@ -125,6 +198,8 @@ void worker_thread()
 				g_sectors[row][col].m_setPlayerList.emplace(NewClient.m_id);
 				NewClient.row = row;
 				NewClient.col = col;
+
+				//g_mapCL.emplace(make_pair(NewClient.m_id, &NewClient));
 			}
 
 			c_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
@@ -139,6 +214,7 @@ void worker_thread()
 		}
 	}
 }
+
 
 int main()
 {
@@ -169,6 +245,7 @@ int main()
 
 	initialize_clients();
 	initialize_sectors();
+	initialzie_npcs();
 
 	CreateIoCompletionPort(reinterpret_cast<HANDLE>(l_socket), g_iocp, 999, 0); // 등록
 
@@ -184,7 +261,11 @@ int main()
 
 	vector<thread> worker_threads;
 	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(worker_thread);
+	thread timer_thread(timer);
+
 	for (auto& threads : worker_threads) threads.join();
+	timer_thread.join();
 
 	//CloseHandle(g_iocp); // 추가
 }
+

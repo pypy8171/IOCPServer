@@ -16,10 +16,10 @@ constexpr int MAX_STR_LEN = 255;
 
 
 
-#define WORLD_WIDTH		400
-#define WORLD_HEIGHT	400
+#define WORLD_WIDTH		800
+#define WORLD_HEIGHT	800
 
-#define SERVER_PORT		9000
+#define SERVER_PORT		3500
 
 #define C2S_LOGIN	1
 #define C2S_MOVE	2
