@@ -38,7 +38,7 @@ struct Event_Type { // 이벤트 큐 // 누가 언제 무엇을
 	int event_id; // 랜덤이동이다 뭐다 이런것
 	int target_id; // 누구한테 어떤 공격을 하는가 이런것. // union 사용
 
-	//constexpr bool operator<(const Event_Type& _Left)const
+	//constexpr bool operator()(const Event_Type& _Left)const
 	//{
 	//	return (wakeup_time > _Left.wakeup_time);
 	//}
@@ -46,8 +46,9 @@ struct Event_Type { // 이벤트 큐 // 누가 언제 무엇을
 };
 
 class Compare {
+
 public:
-	bool operator() (const Event_Type lhs, const Event_Type rhs) const
+	bool operator() (const Event_Type& lhs , const Event_Type& rhs) const
 	{
 		return (lhs.wakeup_time > rhs.wakeup_time);
 	}
@@ -95,7 +96,7 @@ struct CLIENT
 	char		name[MAX_ID_LEN + 1]; // 꽉차서 올수 있으므로 +1
 	unsigned	m_move_time;
 
-	short		row, col;
+	short		row, col; // char로 바꿔도 무방
 	ViewList	m_viewlist;
 	NearList	m_nearlist;
 	RemoveList	m_removelist;
@@ -106,19 +107,16 @@ struct SECTOR
 	mutex						sector_lock;
 	unordered_set<int>			m_setPlayerList;
 	unordered_set<int>			m_setNpcList;
-	short						m_StartX;
-	short						m_StartY;
-	short						m_EndX;
-	short						m_EndY;
+	short						m_StartX, m_StartY, m_EndX, m_EndY;
 };
 
 struct NPC
 {
 	int m_id;
 	short x, y;
-	short col, row;
+	short col, row; // char로 바꿔도 무방
 
-	NPC_STATUS m_Status = S_NONACTIVE;
+	NPC_STATUS m_Status = NPC_STATUS::S_NONACTIVE;
 };
 
 extern SECTOR g_sectors[MAX_ROW][MAX_COL];
@@ -130,4 +128,3 @@ extern priority_queue<Event_Type, vector<Event_Type>, Compare > timer_queue;
 extern mutex timer_lock;
 
 extern void addtimer(int id, ENUMOP op, unsigned int timer);
-

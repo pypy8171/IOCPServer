@@ -20,7 +20,7 @@ HANDLE g_iocp;
 SOCKET l_socket;
 
 void initialize_clients();
-void initialzie_npcs();
+void initialize_npcs();
 void initialize_sectors();
 
 void worker_thread();
@@ -60,7 +60,7 @@ void initialize_sectors()
 	}
 }
 
-void initialzie_npcs()
+void initialize_npcs()
 {
 	for (int i = 0; i < MAX_NPC; ++i)
 	{
@@ -245,7 +245,7 @@ int main()
 
 	initialize_clients();
 	initialize_sectors();
-	initialzie_npcs();
+	initialize_npcs();
 
 	CreateIoCompletionPort(reinterpret_cast<HANDLE>(l_socket), g_iocp, 999, 0); // µî·Ï
 
