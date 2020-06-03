@@ -4,16 +4,14 @@
 #include "PacketHandler.h"
 
 #include <thread>
-#include <chrono>
 
-using namespace chrono;
 
 SECTOR g_sectors[MAX_ROW][MAX_COL];
-CLIENT g_clients[MAX_USER];
+CLIENT g_clients[MAX_USER + MAX_NPC];
 unordered_map<int, CLIENT*> g_mapCL;
-NPC g_npcs[MAX_NPC];
+//NPC g_npcs[MAX_NPC];
 
-priority_queue<Event_Type, vector<Event_Type>, Compare > timer_queue;
+priority_queue<Event_Type> timer_queue;
 mutex timer_lock;
 
 HANDLE g_iocp;
@@ -25,14 +23,20 @@ void initialize_sectors();
 
 void worker_thread();
 
-void addtimer(int id, ENUMOP op, unsigned int timer)
+void addtimer(int id, ENUMOP op, unsigned int timer) // 이벤트 new delete 안하고 재사용 하는것이 얼마나 성능이 좋아지는지 확인해야함
 {
-	Event_Type eventtype;
-	eventtype.obj_id = id; // m_id인 10000부터 들어감
-	eventtype.event_id = op;
-	eventtype.wakeup_time = GetCurrentTime() + timer;
+	Event_Type eType;
+	eType.obj_id = id;
+	eType.event_id = op;
+	eType.wakeup_time = high_resolution_clock::now() + milliseconds(timer);
+
+	//g_clients[id].m_event.obj_id = id;
+	//g_clients[id].m_event.event_id = op;
+	//g_clients[id].m_event.wakeup_time = high_resolution_clock::now() + milliseconds(timer);
+	//g_clients[id].m_event.target_id = 0;
+
 	timer_lock.lock();
-	timer_queue.emplace(eventtype);
+	timer_queue.emplace(eType);
 	timer_lock.unlock();
 }
 
@@ -60,52 +64,111 @@ void initialize_sectors()
 	}
 }
 
+int API_send_message(lua_State* L)
+{
+	int my_id = (int)lua_tointeger(L, -3);
+	int user_id = (int)lua_tointeger(L, -2);
+	char* message = (char*)lua_tostring(L, -1);
+
+	CPacketHandler::GetInst()->send_chat_packet(user_id, my_id, message);
+	lua_pop(L, 3);
+	return 0;
+}
+
+int API_get_x(lua_State* L)
+{
+	int obj_id = (int)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+	int x = g_clients[obj_id].x;
+	lua_pushnumber(L, x);
+	return 1;
+}
+
+int API_get_y(lua_State* L)
+{
+	int obj_id = (int)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+	int y = g_clients[obj_id].y;
+	lua_pushnumber(L, y);
+	return 1;
+}
+
 void initialize_npcs()
 {
-	for (int i = 0; i < MAX_NPC; ++i)
+	cout << "start npc initialize" << endl;
+	for (int i = NPC_START_IDX; i < MAX_NPC + NPC_START_IDX; ++i)
 	{
-		g_npcs[i].m_id = i + NPC_START_IDX;
-		g_npcs[i].m_Status = NPC_STATUS::S_NONACTIVE;
-		g_npcs[i].x = rand() % WORLD_WIDTH;
-		g_npcs[i].y = rand() % WORLD_HEIGHT;
+		g_clients[i].m_socket = 0;
+		g_clients[i].m_id = i;
+		sprintf_s(g_clients[i].name, "NPC%d", i);
+		g_clients[i].m_status = ST_SLEEP;
+		g_clients[i].x = rand() % WORLD_WIDTH;
+		g_clients[i].y = rand() % WORLD_HEIGHT;
+		g_clients[i].row = g_clients[i].y / ROW_GAP;
+		g_clients[i].col = g_clients[i].x / COL_GAP;
 
-		addtimer(g_npcs[i].m_id, ENUMOP::OP_AIMOVE, 1000);
+		g_clients[i].m_otype = O_NPC;
 
-		g_npcs[i].row = g_npcs[i].y / ROW_GAP;
-		g_npcs[i].col = g_npcs[i].x / COL_GAP;
-		g_sectors[g_npcs[i].row][g_npcs[i].col].m_setNpcList.emplace(g_npcs[i].m_id); // npc 삽입
+		short iRow = g_clients[i].row;
+		short iCol = g_clients[i].col;
+
+		g_sectors[iRow][iCol].m_setPlayerList.emplace(i); // npc 삽입
+
+		lua_State* L = g_clients[i].L = luaL_newstate();
+		luaL_openlibs(L);
+		luaL_loadfile(L, "NPC.LUA");
+		lua_pcall(L, 0, 0, 0);
+		lua_getglobal(L, "set_uid");
+		lua_pushnumber(L, i);
+		lua_pcall(L, 1, 0, 0); // L, 파라미터 개수, 리턴 개수, ,
+		lua_pop(L, 1); // getglobal한거 날려줌
+
+		lua_register(L, "API_send_message", API_send_message);
+		lua_register(L, "API_get_x", API_get_x);
+		lua_register(L, "API_get_y", API_get_y);
 	}
+	cout << "finish npc initialize" << endl;
 }
 
 void timer() // 스레드 
 {
 	while (true)
 	{
-		Sleep(1); // 멀티쓰레드 동작이 원활하게 되도록
-		timer_lock.lock();
-		while (!timer_queue.empty())
-		{
-			if (timer_queue.top().wakeup_time > GetCurrentTime())
-				break;
-			
-			Event_Type t_event = timer_queue.top();
-			timer_queue.pop();
-			timer_lock.unlock(); // 큐에서 빼기전까지 lock
-
-			// 아래구조 문제 - 다른 클라 viewlist에 들어있는 npc들은 이미 active상태임 // 의미없이 ai까지 호출함
-			if (g_npcs[t_event.obj_id - NPC_START_IDX].m_Status != S_ACTIVE)
-				addtimer(t_event.obj_id, ENUMOP::OP_AIMOVE, 1000);
-			else
+		this_thread::sleep_for(1ms);// Sleep 은 윈도우에서만 가능한거임.
+		while (true) {
+			timer_lock.lock();
+			if (timer_queue.empty())
 			{
-				EXOVER* exover = new EXOVER; 
-				exover->op = OP_AIMOVE;
-
-				PostQueuedCompletionStatus(g_iocp, 0, t_event.obj_id, &exover->over);// 어차피 getqueuedcompletionstatus 값 그대로 들어옴
+				timer_lock.unlock();
+				break;
 			}
 
-			timer_lock.lock(); // 위에 unlock을 했으므로 lock
+			if (timer_queue.top().wakeup_time > high_resolution_clock::now() )
+			{
+				timer_lock.unlock();
+				break;
+			}
+			Event_Type tEvent = timer_queue.top();
+			timer_queue.pop();
+			timer_lock.unlock();
+
+			switch (tEvent.event_id)
+			{
+			case OP_AIMOVE:
+				EXOVER* exover = new EXOVER;
+				exover->op = OP_AIMOVE;
+
+				PostQueuedCompletionStatus(g_iocp, 1, tEvent.obj_id, &exover->over);
+
+				//g_clients[tEvent.obj_id].m_recv_over.op = OP_AIMOVE;
+				//
+				//PostQueuedCompletionStatus(g_iocp, 1, tEvent.obj_id, &g_clients[tEvent.obj_id].m_recv_over.over);
+
+				//CPacketHandler::GetInst()->npc_move(tEvent.obj_id, OP_AIMOVE);
+				//addtimer(tEvent.obj_id, tEvent.event_id, 1000);
+				break;
+			}
 		}
-		timer_lock.unlock();
 	}
 }
 
@@ -126,9 +189,33 @@ void worker_thread()
 
 		switch (exover->op)
 		{
+		case OP_PLAYER_MOVE:
+		{
+			g_clients[user_id].lua_l.lock();
+			lua_State* L = g_clients[user_id].L;
+			lua_getglobal(L, "event_player_move");
+			lua_pushnumber(L, exover->player_id);
+			int error = lua_pcall(L, 1, 0, 0);
+			if (error) cout << lua_tostring(L, -1)<<endl;
+			//lua_pop(L, 1);
+			g_clients[user_id].lua_l.unlock();
+			delete exover;
+		}
+		break;
 		case OP_AIMOVE:
 		{
 			CPacketHandler::GetInst()->npc_move(static_cast<int>(key), exover->op); // a*는 여기서 돌아간다. // 여기서 key는 npc id
+			bool keep_alive = false;
+			for (int i = 0; i < NPC_START_IDX; ++i)
+				if (true == CViewProcessing::GetInst()->is_near_check_pp(user_id, i))
+					if (ST_ACTIVE == g_clients[i].m_status)
+					{
+						keep_alive = true;
+						break;
+					}
+			if (true == keep_alive) addtimer(static_cast<int>(key), OP_AIMOVE, 1000);
+			else g_clients[user_id].m_status = ST_SLEEP;
+
 			delete exover; // 어차피 send할때 delete 하니까 여기서 안해줘도 될듯. -> 성능차이 남
 		}
 		break;
@@ -188,6 +275,8 @@ void worker_thread()
 				NewClient.m_viewlist.viewlist.clear();
 				NewClient.x = rand() % WORLD_WIDTH;
 				NewClient.y = rand() % WORLD_HEIGHT;
+
+				NewClient.m_otype = O_PLAYER;
 
 				DWORD flags = 0;
 				WSARecv(c_socket, &NewClient.m_recv_over.wsabuf, 1, NULL, &flags, &NewClient.m_recv_over.over, NULL);
@@ -263,8 +352,8 @@ int main()
 	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(worker_thread);
 	thread timer_thread(timer);
 
-	for (auto& threads : worker_threads) threads.join();
 	timer_thread.join();
+	for (auto& threads : worker_threads) threads.join();
 
 	//CloseHandle(g_iocp); // 추가
 }

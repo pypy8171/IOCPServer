@@ -95,35 +95,28 @@ void CPacketHandler::enter_game(int user_id, char name[])
 	g_clients[user_id].name[MAX_ID_LEN] = NULL;
 	send_login_ok_packet(user_id);
 	g_clients[user_id].m_status = ST_ACTIVE; // deadlock 때문에 위치 바꿈
-	g_mapCL.emplace(make_pair(user_id, &g_clients[user_id])); // 나중에 사용
 	g_clients[user_id].m_cl.unlock();
 
-	CViewProcessing::GetInst()->create_nearlist(g_clients[user_id].m_id, (g_clients[user_id].y - VIEW_RADIUS / 2) / ROW_GAP,
-		(g_clients[user_id].x - VIEW_RADIUS / 2) / COL_GAP, (g_clients[user_id].y + VIEW_RADIUS / 2) / ROW_GAP, (g_clients[user_id].x + VIEW_RADIUS / 2) / COL_GAP);
-
-	g_clients[user_id].m_cl.lock(); //하나
-	unordered_set<int> nr = g_clients[user_id].m_nearlist.nearlist;
-	g_clients[user_id].m_cl.unlock();
-	for (auto& near_vl : nr)
-	{
-		if (user_id == near_vl) continue;
-		CPacketHandler::GetInst()->send_enter_packet(g_clients[user_id].m_id, near_vl);
-	}
 
 	// 교수님 코드
-	for (int i = 0; i < MAX_USER; ++i)
+	for (auto &cl : g_clients)
 	{
+		int i = cl.m_id;
 		if (user_id == i) continue;
-		if (false == CViewProcessing::GetInst()->is_near_check_pp(user_id, i))
+		if (true == CViewProcessing::GetInst()->is_near_check_pp(user_id, i))
 		{
 			//g_clients[i].m_cl.lock();
+			if (ST_SLEEP == g_clients[i].m_status)
+			{
+				activate_npc(i);
+			}
+
 			if (ST_ACTIVE == g_clients[i].m_status) // 다른 스레드들이 종료하고 active를 건드려야 한다. 문제가 생기면 수정한다고 하심. 필요한 것임.
 			{
-				if (user_id != i)
-				{
-					send_enter_packet(user_id, i);
+				send_enter_packet(user_id, i);
+				
+				if(true == is_player(i))
 					send_enter_packet(i, user_id);
-				}
 			}
 			//g_clients[i].m_cl.unlock();
 		}
@@ -152,31 +145,27 @@ void CPacketHandler::send_enter_packet(int user_id, int o_id)
 	packet.size = sizeof(packet);
 	packet.type = S2C_ENTER;
 
-	if (o_id < NPC_START_IDX)
-	{
-		packet.x = g_clients[o_id].x;
-		packet.y = g_clients[o_id].y;
-		strcpy_s(packet.name, g_clients[o_id].name);
-		packet.o_type = O_PLAYER;
+	packet.x = g_clients[o_id].x;
+	packet.y = g_clients[o_id].y;
+	strcpy_s(packet.name, g_clients[o_id].name);
+	packet.o_type = g_clients[o_id].m_otype;
 
-	}
-	else
-	{
-		int idx = o_id - NPC_START_IDX; // npc mover는 npc idx가 아니라 id값으로 옴 + 10000인 상태
-		g_npcs[idx].m_Status = S_ACTIVE;
-
-		packet.x = g_npcs[idx].x;
-		packet.y = g_npcs[idx].y;
-		sprintf_s(packet.name, "N%03d", o_id % 200000); // 아이디 배정
-
-		packet.o_type = O_NPC;
-	}
 	// 교수님 코드
 	g_clients[user_id].m_cl.lock();
 	g_clients[user_id].m_viewlist.viewlist.emplace(o_id);
 	g_clients[user_id].m_cl.unlock();
 	//
 
+	send_packet(user_id, &packet);
+}
+
+void CPacketHandler::send_chat_packet(int user_id, int chatter, char mess[])
+{
+	sc_packet_chat packet;
+	packet.id = chatter;
+	packet.size = sizeof(sc_packet_chat);
+	packet.type = S2C_CHAT;
+	strcpy_s(packet.chat, mess);
 	send_packet(user_id, &packet);
 }
 
@@ -187,18 +176,10 @@ void CPacketHandler::send_move_packet(int user_id, int mover)
 	packet.id = mover;
 	packet.size = sizeof(packet);
 	packet.type = S2C_MOVE;
-	if (mover < NPC_START_IDX)
-	{
-		packet.x = g_clients[mover].x;
-		packet.y = g_clients[mover].y;
-		packet.move_time = g_clients[user_id].m_move_time;
-	}
-	else
-	{
-		int idx = mover - NPC_START_IDX; // npc mover는 npc idx가 아니라 id값으로 옴 + 10000인 상태
-		packet.x = g_npcs[idx].x;
-		packet.y = g_npcs[idx].y;
-	}
+
+	packet.x = g_clients[mover].x;
+	packet.y = g_clients[mover].y;
+	packet.move_time = g_clients[user_id].m_move_time;
 
 	send_packet(user_id, &packet);
 }
@@ -231,8 +212,10 @@ void CPacketHandler::disconnect(int user_id)
 	//if(!g_clients[user_id].m_bConnected) --g_curr_user_id;
 	closesocket(g_clients[user_id].m_socket);
 
-	for (auto& cl : g_clients)
+	for (int i = 0;i<NPC_START_IDX;++i)
 	{
+		CLIENT& cl = g_clients[i];
+
 		if (user_id == cl.m_id) continue; // 그래도 send_leave_packet은 보내야 함
 
 		//cl.m_cl.lock(); // 주석
@@ -243,7 +226,6 @@ void CPacketHandler::disconnect(int user_id)
 
 	//나갈때 뷰리스트에 있던 npc들 nonactive로 해야할 듯 // leave에서 해줌 -> npc움직일때 모든 플레이어에게서 벗어나면 nonactive로 만듬
 
-	g_mapCL.erase(user_id); //나중에 사용
 	g_clients[user_id].m_status = ST_FREE;
 	g_clients[user_id].m_cl.unlock();
 }
@@ -312,114 +294,133 @@ void CPacketHandler::do_move(int user_id, int direction)
 
 void CPacketHandler::npc_move(int id, ENUMOP op) // a*알고리즘 사용시 각 타일마다 possess되어있는지 확인한다.  
 {												// 길 찾는 비용이 어느정도인지 아직 모르니
-	int npcIdx = id - NPC_START_IDX;
-	NPC& npc = g_npcs[npcIdx];
 
-	switch (op)
+	int x = g_clients[id].x;
+	int y = g_clients[id].y;
+
+	CViewProcessing::GetInst()->create_viewlist_pn(id, (g_clients[id].y - VIEW_RADIUS / 2) / ROW_GAP,
+		(g_clients[id].x - VIEW_RADIUS / 2) / COL_GAP, (g_clients[id].y + VIEW_RADIUS / 2) / ROW_GAP, (g_clients[id].x + VIEW_RADIUS / 2) / COL_GAP);
+
+	switch (rand() % 4)
 	{
-	case OP_AIMOVE:
+	case D_UP: if (y > 0) y--; break;
+	case D_DOWN:if (y < WORLD_HEIGHT - 1) y++; break;
+	case D_LEFT: if (x > 0) x--; break;
+	case D_RIGHT: if (x < WORLD_WIDTH - 1) x++;	break;
+	}
+
+	g_clients[id].x = x;
+	g_clients[id].y = y;
+
+	if (g_clients[id].x / COL_GAP != g_clients[id].col || g_clients[id].y / ROW_GAP != g_clients[id].row)
 	{
-		char dir = rand() % 4;
-		switch (dir)
+		int iPrevCol = g_clients[id].col;
+		int iPrevRow = g_clients[id].row;
+
+		int iCol = g_clients[id].x / COL_GAP;
+		int iRow = g_clients[id].y / ROW_GAP;
+
+		if (iCol > MAX_COL - 1)
+			iCol = iPrevCol;
+		if (iRow > MAX_ROW - 1)
+			iRow = iPrevRow;
+
+		g_sectors[iPrevRow][iPrevCol].sector_lock.lock();
+		g_sectors[iPrevRow][iPrevCol].m_setPlayerList.erase(g_clients[id].m_id);
+		g_sectors[iPrevRow][iPrevCol].sector_lock.unlock();
+
+		g_sectors[iRow][iCol].sector_lock.lock();
+		g_sectors[iRow][iCol].m_setPlayerList.emplace(g_clients[id].m_id);
+		g_clients[id].row = iRow;
+		g_clients[id].col = iCol;
+		g_sectors[iRow][iCol].sector_lock.unlock();
+	}
+
+	CViewProcessing::GetInst()->create_nearlist_pn(id, (g_clients[id].y - VIEW_RADIUS / 2) / ROW_GAP,
+			(g_clients[id].x - VIEW_RADIUS / 2) / COL_GAP, (g_clients[id].y + VIEW_RADIUS / 2) / ROW_GAP, (g_clients[id].x + VIEW_RADIUS / 2) / COL_GAP);
+
+
+	unordered_set<int> near_vl = g_clients[id].m_nearlist.nearlist;
+	unordered_set<int> view_vl = g_clients[id].m_viewlist.viewlist;
+
+	// 시작하자마자 밖으로 나가면 viewlist nearlist 둘다 없어서 지우지를 못함.
+
+	for (auto& n_p : near_vl)
+	{
+		if (ST_ACTIVE != g_clients[n_p].m_status) continue;
+		if (true == CViewProcessing::GetInst()->is_near_check_pp(n_p, id))
 		{
-		case D_UP: if (npc.y > 0) npc.y--; break;
-		case D_DOWN:if (npc.y < WORLD_HEIGHT - 1) npc.y++; break;
-		case D_LEFT: if (npc.x > 0) npc.x--; break;
-		case D_RIGHT: if (npc.x < WORLD_WIDTH - 1) npc.x++;	break;
-		}
-
-		g_npcs[npcIdx].x = npc.x;
-		g_npcs[npcIdx].y = npc.y;
-		// client 시야에 들어오면 viewlist에 넣어준다. 그 전에 nearlist에 넣어준다.
-		if (g_npcs[npcIdx].x / COL_GAP != g_npcs[npcIdx].col || g_npcs[npcIdx].y / ROW_GAP != g_npcs[npcIdx].row)
-		{
-			int iPrevCol = g_npcs[npcIdx].col;
-			int iPrevRow = g_npcs[npcIdx].row;
-
-			int iCol = g_npcs[npcIdx].x / COL_GAP;
-			int iRow = g_npcs[npcIdx].y / ROW_GAP;
-
-			if (iCol > MAX_COL - 1)
-				iCol = iPrevCol;
-			if (iRow > MAX_ROW - 1)
-				iRow = iPrevRow;
-
-			g_sectors[iPrevRow][iPrevCol].sector_lock.lock();
-			g_sectors[iPrevRow][iPrevCol].m_setNpcList.erase(g_npcs[npcIdx].m_id); // npc의 인덱스를 넣어줌.
-			g_sectors[iPrevRow][iPrevCol].sector_lock.unlock();
-
-			g_sectors[iRow][iCol].sector_lock.lock();
-			g_sectors[iRow][iCol].m_setNpcList.emplace(g_npcs[npcIdx].m_id);
-			g_npcs[npcIdx].row = iRow;
-			g_npcs[npcIdx].col = iCol;
-			g_sectors[iRow][iCol].sector_lock.unlock();
-		}
-
-		for (auto& cl : g_mapCL) // 각 플레이어들이랑 
-		{
-			if (cl.second->m_status != ST_ACTIVE)
-				continue;
-
-			g_clients[cl.first].m_cl.lock();
-			unordered_set <int> old_vl = g_clients[cl.first].m_viewlist.viewlist; // 이전 viewlist
-			unordered_set <int> new_vl = g_clients[cl.first].m_nearlist.nearlist; // 새로운 viewlist
-			g_clients[cl.first].m_cl.unlock();
-
-			int npcID = npcIdx + NPC_START_IDX;
-
-			if (CViewProcessing::GetInst()->is_near_check_pn(cl.first, npcIdx)) { // npc의 idx가 들어가있음
-				new_vl.emplace(npcID); // npc의 id값이 들어가있음
-
-				if (0 == old_vl.count(npcID)) // view리스트에 없다.
-				{
-					CPacketHandler::GetInst()->send_enter_packet(cl.first, npcID);
-				}
-				else // viewlist에 있다.
-				{
-					if (S_ACTIVE == g_npcs[npcIdx].m_Status)
-					{
-						CPacketHandler::GetInst()->send_move_packet(cl.first, npcID);
-					}
-					else
-						CPacketHandler::GetInst()->send_enter_packet(cl.first, npcID);
-				}
+			g_clients[n_p].m_cl.lock();
+			if (0 != g_clients[n_p].m_viewlist.viewlist.count(id))
+			{
+				g_clients[n_p].m_cl.unlock();
+				CPacketHandler::GetInst()->send_move_packet(n_p, id);
 			}
 			else
 			{
-				new_vl.erase(npcID);
-			}
-			
-			if (0 == new_vl.count(npcID) && 0 != old_vl.count(npcID)) // 예전 viewlist에 있고, 새로운 viewlist에는 없다
-			{
-				CPacketHandler::GetInst()->send_leave_packet(cl.first, npcID); // viewlist에는 npc idx가 아닌 npc의 id가 들어가있음
-
-				for (auto& o_cl : g_mapCL)
-				{
-					if (o_cl == cl) continue;
-
-					g_clients[o_cl.first].m_cl.lock();
-					unordered_set <int> o_old_vl = g_clients[o_cl.first].m_viewlist.viewlist; // 이전 viewlist
-					g_clients[o_cl.first].m_cl.unlock();
-
-					if (0 == o_old_vl.count(npcID)) // view리스트에 없다.
-					{
-						g_npcs[npcIdx].m_Status = S_NONACTIVE;
-					}
-					else
-					{
-						g_npcs[npcIdx].m_Status = S_ACTIVE;
-						break;
-					}
-
-				}
+				g_clients[n_p].m_cl.unlock();
+				CPacketHandler::GetInst()->send_enter_packet(n_p, id);
 			}
 		}
-		addtimer(g_npcs[npcIdx].m_id, ENUMOP::OP_AIMOVE, 1000);
-		break;
-	}
-	break;
 	}
 
 
+	for (auto& v_p : view_vl)
+	{
+		if (true != CViewProcessing::GetInst()->is_near_check_pp(v_p, id))
+		{
+			g_clients[v_p].m_cl.lock();
+			if (0 != g_clients[v_p].m_viewlist.viewlist.count(id))
+			{
+				g_clients[v_p].m_cl.unlock();
+				CPacketHandler::GetInst()->send_leave_packet(v_p, id);
+			}
+			else
+			{
+				g_clients[v_p].m_cl.unlock();
+			}
+		}
+	}
+	
 
+	//for (int i = 0; i < NPC_START_IDX; ++i)
+	//{
+	//	if (ST_ACTIVE != g_clients[i].m_status) continue;
+	//	if (true == CViewProcessing::GetInst()->is_near_check_pp(i, id))
+	//	{
+	//		g_clients[i].m_cl.lock();
+	//		if (0 != g_clients[i].m_viewlist.viewlist.count(id))
+	//		{
+	//			g_clients[i].m_cl.unlock();
+	//			CPacketHandler::GetInst()->send_move_packet(i, id);
+	//		}
+	//		else
+	//		{
+	//			g_clients[i].m_cl.unlock();
+	//			CPacketHandler::GetInst()->send_enter_packet(i, id);
+	//		}
+	//	}
+	//	else
+	//	{
+	//		g_clients[i].m_cl.lock();
+	//		if (0 != g_clients[i].m_viewlist.viewlist.count(id))
+	//		{
+	//			g_clients[i].m_cl.unlock();
+	//			CPacketHandler::GetInst()->send_leave_packet(i, id);
+	//		}
+	//		else
+	//		{
+	//			g_clients[i].m_cl.unlock();
+	//		}
+	//	}
+	//}
+
+
+}
+
+void CPacketHandler::activate_npc(int id)
+{
+	C_STATUS old_state = C_STATUS::ST_SLEEP;
+	if (true == atomic_compare_exchange_strong(&g_clients[id].m_status, &old_state, ST_ACTIVE)) // 한번만 addtimer진행 
+		addtimer(id, OP_AIMOVE, 1000);
 }

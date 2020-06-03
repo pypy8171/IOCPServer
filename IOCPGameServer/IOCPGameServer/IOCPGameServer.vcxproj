@@ -145,7 +145,12 @@
     <ClInclude Include="..\protocol.h" />
     <ClInclude Include="define.h" />
     <ClInclude Include="extern.h" />
+    <ClInclude Include="lauxlib.h" />
     <ClInclude Include="LoginPacket.h" />
+    <ClInclude Include="lua.h" />
+    <ClInclude Include="lua.hpp" />
+    <ClInclude Include="luaconf.h" />
+    <ClInclude Include="lualib.h" />
     <ClInclude Include="MovePacket.h" />
     <ClInclude Include="Packet.h" />
     <ClInclude Include="PacketHandler.h" />
@@ -158,6 +163,12 @@
     <ClCompile Include="IOCPServer.cpp" />
     <ClCompile Include="PacketHandler.cpp" />
     <ClCompile Include="ViewProcessing.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="NPC.LUA" />
+  </ItemGroup>
+  <ItemGroup>
+    <Library Include="lua53.lib" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

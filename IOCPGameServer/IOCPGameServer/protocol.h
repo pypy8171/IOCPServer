@@ -12,8 +12,8 @@
 using namespace std;
 
 constexpr int MAX_ID_LEN = 50;
-constexpr int MAX_STR_LEN = 255;
-
+constexpr int MAX_STR_LEN = 80;
+constexpr int NPC_START_IDX = 10000;
 
 
 #define WORLD_WIDTH		800
@@ -28,6 +28,7 @@ constexpr int MAX_STR_LEN = 255;
 #define S2C_MOVE			2
 #define S2C_ENTER			3
 #define S2C_LEAVE			4
+#define S2C_CHAT			5
 
 //enum class MON_TYPE{PEACE, ARGO};
 
@@ -74,7 +75,7 @@ struct sc_packet_chat {
 	char size;
 	char type;
 	int	 id;
-	char chat[100];
+	char chat[MAX_STR_LEN];
 };
 
 struct cs_packet_login {
