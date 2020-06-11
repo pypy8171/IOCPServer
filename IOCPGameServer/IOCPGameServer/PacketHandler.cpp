@@ -1,6 +1,7 @@
 #pragma once;
 #include "PacketHandler.h"
 #include "ViewProcessing.h"
+#include "DBHandler.h"
 
 CPacketHandler::CPacketHandler()
 {
@@ -51,8 +52,9 @@ void CPacketHandler::process_packet(int user_id, char buf[])
 	{
 	case C2S_LOGIN:
 	{
+		//wcout.imbue(locale("korean"));
 		cs_packet_login* packet = reinterpret_cast<cs_packet_login*>(buf);
-		enter_game(user_id, packet->name);
+		CDBHandler::GetInst()->DB_login(user_id, packet->name); // 여기서 enter
 	}
 	break;
 	case C2S_MOVE:
@@ -88,26 +90,53 @@ void CPacketHandler::send_packet(int user_id, void* packet)
 	WSASend(user.m_socket, &exover->wsabuf, 1, NULL, 0, &exover->over, NULL);
 }
 
-void CPacketHandler::enter_game(int user_id, char name[])
+void CPacketHandler::enter_game(int user_id, WCHAR name[])
 {
 	g_clients[user_id].m_cl.lock();
-	strcpy_s(g_clients[user_id].name, name);
-	g_clients[user_id].name[MAX_ID_LEN] = NULL;
+	wcscpy_s(g_clients[user_id].name, name);
+	g_clients[user_id].name[MAX_ID_LEN] = NULL; 
 	send_login_ok_packet(user_id);
 	g_clients[user_id].m_status = ST_ACTIVE; // deadlock 때문에 위치 바꿈
 	g_clients[user_id].m_cl.unlock();
 
+	//CLIENT& user = g_clients[user_id];
+
+	//if (user.x / COL_GAP != user.col || user.y / ROW_GAP != user.row)
+	//{
+	//	int iPrevCol = user.col;
+	//	int iPrevRow = user.row;
+
+	//	int iCol = user.x / COL_GAP;
+	//	int iRow = user.y / ROW_GAP;
+
+	//	if (iCol > MAX_COL - 1)
+	//		iCol = iPrevCol;
+	//	if (iRow > MAX_ROW - 1)
+	//		iRow = iPrevRow;
+
+	//	g_sectors[iPrevRow][iPrevCol].sector_lock.lock();
+	//	g_sectors[iPrevRow][iPrevCol].m_setPlayerList.erase(user.m_id);
+	//	g_sectors[iPrevRow][iPrevCol].sector_lock.unlock();
+
+	//	g_sectors[iRow][iCol].sector_lock.lock();
+	//	g_sectors[iRow][iCol].m_setPlayerList.emplace(user.m_id);
+	//	user.row = iRow;
+	//	user.col = iCol;
+	//	g_sectors[iRow][iCol].sector_lock.unlock();
+	//}
+
+	//CViewProcessing::GetInst()->create_nearlist(user_id, (user.y - VIEW_RADIUS / 2) / ROW_GAP,
+	//	(user.x - VIEW_RADIUS / 2) / COL_GAP, (user.y + VIEW_RADIUS / 2) / ROW_GAP, (user.x + VIEW_RADIUS / 2) / COL_GAP);
 
 	// 교수님 코드
-	for (auto &cl : g_clients)
+	for (auto &cl : g_clients) // 섹터로 가능한 부분 // 이부분도 성능에 문제 있을것.
 	{
 		int i = cl.m_id;
 		if (user_id == i) continue;
 		if (true == CViewProcessing::GetInst()->is_near_check_pp(user_id, i))
 		{
 			//g_clients[i].m_cl.lock();
-			if (ST_SLEEP == g_clients[i].m_status)
-			{
+			if (ST_SLEEP == g_clients[i].m_status){
 				activate_npc(i);
 			}
 
@@ -147,7 +176,7 @@ void CPacketHandler::send_enter_packet(int user_id, int o_id)
 
 	packet.x = g_clients[o_id].x;
 	packet.y = g_clients[o_id].y;
-	strcpy_s(packet.name, g_clients[o_id].name);
+	wcscpy_s(packet.name, g_clients[o_id].name);
 	packet.o_type = g_clients[o_id].m_otype;
 
 	// 교수님 코드
@@ -198,14 +227,8 @@ void CPacketHandler::send_leave_packet(int user_id, int o_id)
 	send_packet(user_id, &packet);
 }
 
-
-
-
 void CPacketHandler::disconnect(int user_id)
 {
-	//for (auto& [이름, 나이] : g_mapCL)
-	//	cout << 이름 << 나이 << endl;
-
 	send_leave_packet(user_id, user_id);
 	g_clients[user_id].m_cl.lock();
 	g_clients[user_id].m_status = ST_ALLOC;
@@ -224,8 +247,7 @@ void CPacketHandler::disconnect(int user_id)
 		//cl.m_cl.unlock(); // 주석
 	}
 
-	//나갈때 뷰리스트에 있던 npc들 nonactive로 해야할 듯 // leave에서 해줌 -> npc움직일때 모든 플레이어에게서 벗어나면 nonactive로 만듬
-
+	CDBHandler::GetInst()->DB_logout(user_id);
 	g_clients[user_id].m_status = ST_FREE;
 	g_clients[user_id].m_cl.unlock();
 }
@@ -238,22 +260,12 @@ void CPacketHandler::do_move(int user_id, int direction)
 
 	switch (direction)
 	{
-	case D_UP:
-		if (y > 0)	y--; // 0
-		break;
-	case D_DOWN:
-		if (y < WORLD_HEIGHT - 1) y++; //
-		break;
-	case D_LEFT:
-		if (x > 0) x--; // 
-		break;
-	case D_RIGHT:
-		if (x < WORLD_WIDTH - 1) x++; // 
-		break;
-	default:
-		cout << "Unkown Direction from Client move packet!\n";
-		DebugBreak();
-		exit(-1);
+	case D_UP: if (y > 0)	y--; break;// 0
+	case D_DOWN: if (y < WORLD_HEIGHT - 1) y++; break; //		
+	case D_LEFT: if (x > 0) x--; break;// 		
+	case D_RIGHT: if (x < WORLD_WIDTH - 1) x++; break;// 
+	default: cout << "Unkown Direction from Client move packet!\n";
+		DebugBreak(); exit(-1);
 	}
 
 	user.x = x;
@@ -284,10 +296,8 @@ void CPacketHandler::do_move(int user_id, int direction)
 		g_sectors[iRow][iCol].sector_lock.unlock();
 	}
 
-
 	CViewProcessing::GetInst()->create_nearlist(user_id, (user.y - VIEW_RADIUS / 2) / ROW_GAP,
 		(user.x - VIEW_RADIUS / 2) / COL_GAP, (user.y + VIEW_RADIUS / 2) / ROW_GAP, (user.x + VIEW_RADIUS / 2) / COL_GAP);
-
 
 	CViewProcessing::GetInst()->check_near_view(user_id);
 }
@@ -298,19 +308,48 @@ void CPacketHandler::npc_move(int id, ENUMOP op) // a*알고리즘 사용시 각 타일마�
 	int x = g_clients[id].x;
 	int y = g_clients[id].y;
 
-	CViewProcessing::GetInst()->create_viewlist_pn(id, (g_clients[id].y - VIEW_RADIUS / 2) / ROW_GAP,
-		(g_clients[id].x - VIEW_RADIUS / 2) / COL_GAP, (g_clients[id].y + VIEW_RADIUS / 2) / ROW_GAP, (g_clients[id].x + VIEW_RADIUS / 2) / COL_GAP);
+	// 여기서 18~20% 차이남 조건.
+	//if (g_clients[id].m_nearlist.nearlist.empty() && g_clients[id].m_viewlist.viewlist.empty())
+	//{
+		CViewProcessing::GetInst()->create_viewlist_pn(id, (g_clients[id].y - VIEW_RADIUS / 2) / ROW_GAP,
+			(g_clients[id].x - VIEW_RADIUS / 2) / COL_GAP, (g_clients[id].y + VIEW_RADIUS / 2) / ROW_GAP, (g_clients[id].x + VIEW_RADIUS / 2) / COL_GAP);
+	//}
 
-	switch (rand() % 4)
+	switch (op)
 	{
-	case D_UP: if (y > 0) y--; break;
-	case D_DOWN:if (y < WORLD_HEIGHT - 1) y++; break;
-	case D_LEFT: if (x > 0) x--; break;
-	case D_RIGHT: if (x < WORLD_WIDTH - 1) x++;	break;
+	case ENUMOP::OP_RANDOM_MOVE:
+	{
+		switch (rand() % 4)
+		{
+		case D_UP: if (y > 0) y--; break;
+		case D_DOWN:if (y < WORLD_HEIGHT - 1) y++; break;
+		case D_LEFT: if (x > 0) x--; break;
+		case D_RIGHT: if (x < WORLD_WIDTH - 1) x++;	break;
+		}
+	}
+	break;
 	}
 
 	g_clients[id].x = x;
 	g_clients[id].y = y;
+	if(g_clients[id].m_movenum>-1)
+		g_clients[id].m_movenum -= 1;
+
+	if (0 == g_clients[id].m_movenum)
+	{
+		if (false == CPacketHandler::GetInst()->is_player(id)) {
+			// 객체가 담고있는걸로해도 성능이 차이가 없음
+			//CLIENT& cl = g_clients[id];
+			//ZeroMemory(&cl.m_recv_over.over, sizeof(cl.m_recv_over.op));
+			//cl.m_recv_over.op = OP_RANDOM_MOVE_FINISH;
+			//cl.m_recv_over.player_id = id;
+			//PostQueuedCompletionStatus(g_iocp, 1, cl.m_recv_over.player_id, &cl.m_recv_over.over);
+			EXOVER* over = new EXOVER;
+			over->op = OP_RANDOM_MOVE_FINISH;
+			over->player_id = id;
+			PostQueuedCompletionStatus(g_iocp, 1, g_clients[id].m_id, &over->over);
+		}
+	}
 
 	if (g_clients[id].x / COL_GAP != g_clients[id].col || g_clients[id].y / ROW_GAP != g_clients[id].row)
 	{
@@ -345,82 +384,49 @@ void CPacketHandler::npc_move(int id, ENUMOP op) // a*알고리즘 사용시 각 타일마�
 
 	// 시작하자마자 밖으로 나가면 viewlist nearlist 둘다 없어서 지우지를 못함.
 
+	bool keep_alive = false;
+
 	for (auto& n_p : near_vl)
 	{
 		if (ST_ACTIVE != g_clients[n_p].m_status) continue;
 		if (true == CViewProcessing::GetInst()->is_near_check_pp(n_p, id))
 		{
+			keep_alive = true;
 			g_clients[n_p].m_cl.lock();
-			if (0 != g_clients[n_p].m_viewlist.viewlist.count(id))
-			{
+			if (0 != g_clients[n_p].m_viewlist.viewlist.count(id)){
 				g_clients[n_p].m_cl.unlock();
 				CPacketHandler::GetInst()->send_move_packet(n_p, id);
 			}
-			else
-			{
+			else{
 				g_clients[n_p].m_cl.unlock();
 				CPacketHandler::GetInst()->send_enter_packet(n_p, id);
 			}
 		}
 	}
 
-
+	
 	for (auto& v_p : view_vl)
 	{
-		if (true != CViewProcessing::GetInst()->is_near_check_pp(v_p, id))
+		if (true != CViewProcessing::GetInst()->is_near_check_pp(v_p, id)) // 근처에 없다.
 		{
 			g_clients[v_p].m_cl.lock();
-			if (0 != g_clients[v_p].m_viewlist.viewlist.count(id))
-			{
+			if (0 != g_clients[v_p].m_viewlist.viewlist.count(id))	{ // 플레이어 viewlist에 있다
 				g_clients[v_p].m_cl.unlock();
 				CPacketHandler::GetInst()->send_leave_packet(v_p, id);
 			}
-			else
-			{
+			else{
 				g_clients[v_p].m_cl.unlock();
 			}
 		}
 	}
-	
 
-	//for (int i = 0; i < NPC_START_IDX; ++i)
-	//{
-	//	if (ST_ACTIVE != g_clients[i].m_status) continue;
-	//	if (true == CViewProcessing::GetInst()->is_near_check_pp(i, id))
-	//	{
-	//		g_clients[i].m_cl.lock();
-	//		if (0 != g_clients[i].m_viewlist.viewlist.count(id))
-	//		{
-	//			g_clients[i].m_cl.unlock();
-	//			CPacketHandler::GetInst()->send_move_packet(i, id);
-	//		}
-	//		else
-	//		{
-	//			g_clients[i].m_cl.unlock();
-	//			CPacketHandler::GetInst()->send_enter_packet(i, id);
-	//		}
-	//	}
-	//	else
-	//	{
-	//		g_clients[i].m_cl.lock();
-	//		if (0 != g_clients[i].m_viewlist.viewlist.count(id))
-	//		{
-	//			g_clients[i].m_cl.unlock();
-	//			CPacketHandler::GetInst()->send_leave_packet(i, id);
-	//		}
-	//		else
-	//		{
-	//			g_clients[i].m_cl.unlock();
-	//		}
-	//	}
-	//}
-
-
+	if (true == keep_alive) addtimer(id, OP_RANDOM_MOVE, 1000);
+	else g_clients[id].m_status = ST_SLEEP;
 }
 
 void CPacketHandler::activate_npc(int id)
 {
 	C_STATUS old_state = C_STATUS::ST_SLEEP;
 	if (true == atomic_compare_exchange_strong(&g_clients[id].m_status, &old_state, ST_ACTIVE)) // 한번만 addtimer진행 
-		addtimer(id, OP_AIMOVE, 1000);
+		addtimer(id, OP_RANDOM_MOVE, 1000);
 }

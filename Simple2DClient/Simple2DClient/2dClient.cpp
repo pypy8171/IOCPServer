@@ -41,7 +41,7 @@ private:
 
 public:
 	int m_x, m_y;
-	char name[MAX_ID_LEN];
+	WCHAR name[MAX_ID_LEN];
 	OBJECT(sf::Texture& t, int x, int y, int x2, int y2) {
 		m_showing = false;
 		m_sprite.setTexture(t);
@@ -86,7 +86,7 @@ public:
 			g_window->draw(m_text);
 		}
 	}
-	void set_name(char str[]) {
+	void set_name(WCHAR str[]) {
 		m_name.setFont(g_font);
 		m_name.setString(str);
 		m_name.setFillColor(sf::Color(255, 255, 0));
@@ -107,6 +107,7 @@ OBJECT black_tile;
 
 sf::Texture* board;
 sf::Texture* pieces;
+sf::Texture* blocks;
 
 void client_initialize()
 {
@@ -162,7 +163,7 @@ void ProcessPacket(char* ptr)
 				npcs[id] = OBJECT{ *pieces, 64, 0, 64, 64 };
 			else
 				npcs[id] = OBJECT{ *pieces, 0, 0, 64, 64 };
-			strcpy_s(npcs[id].name, my_packet->name);
+			wcscpy_s(npcs[id].name, my_packet->name);
 			npcs[id].set_name(my_packet->name);
 			npcs[id].move(my_packet->x, my_packet->y);
 			npcs[id].show();
@@ -313,24 +314,49 @@ void send_move_packet(unsigned char dir)
 int main()
 {
 	wcout.imbue(locale("korean"));
+	setlocale(LC_ALL, "Korean");
+
+
 	sf::Socket::Status status = g_socket.connect("127.0.0.1", SERVER_PORT);
+
 	g_socket.setBlocking(false);
 
 	if (status != sf::Socket::Done) {
 		wcout << L"서버와 연결할 수 없습니다.\n";
 		while (true);
 	}
+	else
+	{
+
+	}
 
 	client_initialize();
 
+
+	WCHAR	cl_name[MAX_ID_LEN]{};
+
+	std::cout << "input player name : ";
+	std::wcin >> cl_name;
+
 	cs_packet_login l_packet;
+	ZeroMemory(l_packet.name, MAX_ID_LEN);
 	l_packet.size = sizeof(l_packet);
 	l_packet.type = C2S_LOGIN;
 	int t_id = GetCurrentProcessId();
-	sprintf_s(l_packet.name, "P%03d", t_id % 1000);
-	strcpy_s(avatar.name, l_packet.name);
+	wprintf_s(l_packet.name, "%s");
+	wcscpy_s(l_packet.name, cl_name);
+	//strcpy_s(avatar.name, l_packet.name);
 	avatar.set_name(l_packet.name);
 	send_packet(&l_packet);
+
+	//cs_packet_login l_packet;
+	//l_packet.size = sizeof(l_packet);
+	//l_packet.type = C2S_LOGIN;
+	//int t_id = GetCurrentProcessId();
+	//sprintf_s(l_packet.name, "P%03d", t_id % 1000);
+	//strcpy_s(avatar.name, l_packet.name);
+	//avatar.set_name(l_packet.name);
+	//send_packet(&l_packet);
 
 	sf::RenderWindow window(sf::VideoMode(WINDOW_WIDTH , WINDOW_HEIGHT), "2D CLIENT");
 	g_window = &window;

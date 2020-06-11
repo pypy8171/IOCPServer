@@ -9,7 +9,7 @@ public:
 	void process_packet(int user_id, char buf[]);
 	void send_packet(int user_id, void* packet);
 
-	void enter_game(int user_id, char name[]);
+	void enter_game(int user_id, WCHAR name[]);
 	void send_login_ok_packet(int user_id);
 	void send_enter_packet(int user_id, int o_id);
 	void send_chat_packet(int user_id, int chatter, char mess[]);

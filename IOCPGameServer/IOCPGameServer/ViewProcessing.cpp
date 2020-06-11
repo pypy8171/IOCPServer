@@ -22,10 +22,8 @@ void CViewProcessing::create_nearlist(int user_id, int row_start, int col_start,
 	near_vl.clear();
 	g_clients[user_id].m_cl.unlock();
 
-	for (int i = col_start; i <= col_end; ++i)
-	{
-		for (int j = row_start; j <= row_end; ++j)
-		{
+	for (int i = col_start; i <= col_end; ++i)	{
+		for (int j = row_start; j <= row_end; ++j)		{
 			int iCol = -1;
 			int iRow = -1;
 
@@ -41,14 +39,18 @@ void CViewProcessing::create_nearlist(int user_id, int row_start, int col_start,
 			g_sectors[iRow][iCol].sector_lock.lock(); // 섹터락
 			for (auto& playerlist : g_sectors[iRow][iCol].m_setPlayerList) {
 				if (is_near_check_pp(user_id, playerlist)) {
-
 					if (false == CPacketHandler::GetInst()->is_player(playerlist)) {
+						//CLIENT& cl = g_clients[playerlist];
+						//ZeroMemory(&cl.m_recv_over.over, sizeof(cl.m_recv_over.op));
+						//cl.m_recv_over.op = OP_PLAYER_MOVE;
+						//cl.m_recv_over.player_id = playerlist;
+						//PostQueuedCompletionStatus(g_iocp, 1, cl.m_recv_over.player_id, &cl.m_recv_over.over);
+
 						EXOVER* over = new EXOVER;
 						over->op = OP_PLAYER_MOVE;
 						over->player_id = user_id;
 						PostQueuedCompletionStatus(g_iocp, 1, g_clients[playerlist].m_id, &over->over);
 					}
-
 					near_vl.emplace(playerlist);
 				}
 			}
@@ -69,10 +71,8 @@ void CViewProcessing::create_nearlist_pn(int npc_id, int row_start, int col_star
 	unordered_set <int> near_vl;
 	near_vl.clear();
 
-	for (int i = col_start; i <= col_end; ++i)
-	{
-		for (int j = row_start; j <= row_end; ++j)
-		{
+	for (int i = col_start; i <= col_end; ++i)	{
+		for (int j = row_start; j <= row_end; ++j)	{
 			int iCol = -1;
 			int iRow = -1;
 
@@ -87,8 +87,7 @@ void CViewProcessing::create_nearlist_pn(int npc_id, int row_start, int col_star
 
 			g_sectors[iRow][iCol].sector_lock.lock(); // 섹터락
 			for (auto& playerlist : g_sectors[iRow][iCol].m_setPlayerList) {
-				if (CPacketHandler::GetInst()->is_player(playerlist))
-				{
+				if (CPacketHandler::GetInst()->is_player(playerlist)) {
 					if (is_near_check_pp(npc_id, playerlist))
 						near_vl.emplace(playerlist);
 				}
@@ -96,8 +95,7 @@ void CViewProcessing::create_nearlist_pn(int npc_id, int row_start, int col_star
 			g_sectors[iRow][iCol].sector_lock.unlock();
 		}
 	}
-
-	
+		
 	g_clients[npc_id].m_nearlist.nearlist = near_vl;
 }
 
@@ -109,15 +107,10 @@ void CViewProcessing::create_viewlist_pn(int npc_id, int row_start, int col_star
 	unordered_set <int> view_vl;
 	view_vl.clear();
 
-	for (int i = col_start; i <= col_end; ++i)
-	{
-		for (int j = row_start; j <= row_end; ++j)
-		{
-			int iCol = -1;
-			int iRow = -1;
-
-			iCol = i;
-			iRow = j;
+	for (int i = col_start; i <= col_end; ++i){
+		for (int j = row_start; j <= row_end; ++j){
+			int iCol = -1;	int iRow = -1;
+			iCol = i;	iRow = j;
 
 			if (iCol < 0) iCol = 0;
 			if (iRow < 0) iRow = 0;
@@ -127,8 +120,7 @@ void CViewProcessing::create_viewlist_pn(int npc_id, int row_start, int col_star
 
 			g_sectors[iRow][iCol].sector_lock.lock(); // 섹터락
 			for (auto& playerlist : g_sectors[iRow][iCol].m_setPlayerList) {
-				if (CPacketHandler::GetInst()->is_player(playerlist))
-				{
+				if (CPacketHandler::GetInst()->is_player(playerlist)) {
 					if (is_near_check_pp(npc_id, playerlist))
 						view_vl.emplace(playerlist);
 				}
@@ -136,7 +128,6 @@ void CViewProcessing::create_viewlist_pn(int npc_id, int row_start, int col_star
 			g_sectors[iRow][iCol].sector_lock.unlock();
 		}
 	}
-
 	g_clients[npc_id].m_viewlist.viewlist = view_vl;
 }
 
@@ -163,13 +154,11 @@ void CViewProcessing::check_near_view(int user_id)
 				continue;
 			}
 			g_clients[np].m_cl.lock();
-			if (0 == g_clients[np].m_viewlist.viewlist.count(user_id))
-			{
+			if (0 == g_clients[np].m_viewlist.viewlist.count(user_id))	{
 				g_clients[np].m_cl.unlock();
 				CPacketHandler::GetInst()->send_enter_packet(np, user_id);
 			}
-			else
-			{
+			else{
 				g_clients[np].m_cl.unlock();
 				CPacketHandler::GetInst()->send_move_packet(np, user_id);
 			}
@@ -179,14 +168,11 @@ void CViewProcessing::check_near_view(int user_id)
 			if (false == CPacketHandler::GetInst()->is_player(np)) continue;
 
 			g_clients[np].m_cl.lock();
-			if (0 != g_clients[np].m_viewlist.viewlist.count(user_id))
-			{
+			if (0 != g_clients[np].m_viewlist.viewlist.count(user_id))	{
 				g_clients[np].m_cl.unlock();
 				CPacketHandler::GetInst()->send_move_packet(np, user_id);
-
 			}
-			else
-			{
+			else{
 				g_clients[np].m_cl.unlock();
 				CPacketHandler::GetInst()->send_enter_packet(np, user_id);
 			}
@@ -201,13 +187,11 @@ void CViewProcessing::check_near_view(int user_id)
 			if (false == CPacketHandler::GetInst()->is_player(old_p)) continue;
 
 			g_clients[old_p].m_cl.lock();
-			if (0 != g_clients[old_p].m_viewlist.viewlist.count(user_id))
-			{
+			if (0 != g_clients[old_p].m_viewlist.viewlist.count(user_id)){
 				g_clients[old_p].m_cl.unlock();
 				CPacketHandler::GetInst()->send_leave_packet(old_p, user_id);
 			}
-			else
-			{
+			else{
 				g_clients[old_p].m_cl.unlock();
 			}
 		}
@@ -224,13 +208,11 @@ void CViewProcessing::check_near_view_pn(int npc_id)
 	for (auto np : new_vl)
 	{
 		g_clients[npc_id].m_cl.lock();
-		if (0 != g_clients[npc_id].m_viewlist.viewlist.count(np))
-		{
+		if (0 != g_clients[npc_id].m_viewlist.viewlist.count(np)){
 			g_clients[npc_id].m_cl.unlock();
 			CPacketHandler::GetInst()->send_move_packet(np, npc_id);
 		}
-		else
-		{
+		else{
 			g_clients[npc_id].m_cl.unlock();
 			CPacketHandler::GetInst()->send_enter_packet(np, npc_id);
 		}
@@ -239,13 +221,11 @@ void CViewProcessing::check_near_view_pn(int npc_id)
 	for (auto old_p : old_vl)
 	{
 		g_clients[npc_id].m_cl.lock();
-		if (0 != g_clients[npc_id].m_viewlist.viewlist.count(old_p))
-		{
+		if (0 != g_clients[npc_id].m_viewlist.viewlist.count(old_p)){
 			g_clients[npc_id].m_cl.unlock();
 			CPacketHandler::GetInst()->send_leave_packet(old_p, npc_id);
 		}
-		else
-		{
+		else{
 			g_clients[npc_id].m_cl.unlock();
 		}
 	}
@@ -261,14 +241,3 @@ bool CViewProcessing::is_near_check_pp(int id1, int id2)
 
 	return true;
 }
-
-//bool CViewProcessing::is_near_check_pn(int id1, int id2)
-//{
-//	if (VIEW_RADIUS / 2 < abs(g_clients[id1].x - g_npcs[id2].x))
-//		return false;
-//	if (VIEW_RADIUS / 2 < abs(g_clients[id1].y - g_npcs[id2].y))
-//		return false;
-//
-//	//g_npcs[id2].m_Status = NPC_STATUS::S_ACTIVE;
-//	return true;
-//}

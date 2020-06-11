@@ -28,6 +28,9 @@
     <Filter Include="소스 파일\View">
       <UniqueIdentifier>{66a0eee7-fe85-4f06-8662-5d42437fa540}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\DBHandler">
+      <UniqueIdentifier>{a1462f3e-d800-4fea-8a6a-691a01757149}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\protocol.h">
@@ -69,6 +72,9 @@
     <ClInclude Include="lualib.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="DBHandler.h">
+      <Filter>소스 파일\DBHandler</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="IOCPServer.cpp">
@@ -88,6 +94,9 @@
     </ClCompile>
     <ClCompile Include="ViewProcessing.cpp">
       <Filter>소스 파일\View</Filter>
+    </ClCompile>
+    <ClCompile Include="DBHandler.cpp">
+      <Filter>소스 파일\DBHandler</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

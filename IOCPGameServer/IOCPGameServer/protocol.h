@@ -12,8 +12,11 @@
 using namespace std;
 
 constexpr int MAX_ID_LEN = 50;
+constexpr int MAX_NAME_LEN = 50;
 constexpr int MAX_STR_LEN = 80;
-constexpr int NPC_START_IDX = 10000;
+constexpr int NPC_START_IDX = 20000;
+//constexpr int ENEMY_START_IDX = 20000;
+//constexpr int MAX_ENEMY = 200000;
 
 
 #define WORLD_WIDTH		800
@@ -60,7 +63,7 @@ struct sc_packet_enter { //
 	char size;
 	char type;
 	int id;
-	char name[MAX_ID_LEN];
+	wchar_t name[MAX_ID_LEN];
 	char o_type;
 	short x, y;
 };
@@ -81,7 +84,7 @@ struct sc_packet_chat {
 struct cs_packet_login {
 	char	size;
 	char	type;
-	char	name[MAX_ID_LEN];
+	wchar_t	name[MAX_ID_LEN];
 };
 
 constexpr unsigned char D_UP = 0;

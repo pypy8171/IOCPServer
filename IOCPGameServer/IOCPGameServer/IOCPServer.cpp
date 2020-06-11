@@ -1,7 +1,12 @@
 #pragma once;
+//SQLConnect()
 #include "extern.h"
 #include "ViewProcessing.h"
 #include "PacketHandler.h"
+#include "DBHandler.h"
+
+#include <algorithm>
+#include <random>
 
 #include <thread>
 
@@ -9,66 +14,74 @@
 SECTOR g_sectors[MAX_ROW][MAX_COL];
 CLIENT g_clients[MAX_USER + MAX_NPC];
 unordered_map<int, CLIENT*> g_mapCL;
-//NPC g_npcs[MAX_NPC];
+CTile g_tiles[MAX_TILE_ROW][MAX_TILE_COL];
 
-priority_queue<Event_Type> timer_queue;
+priority_queue<Event_Type*, vector<Event_Type*>, Compare> timer_queue;
 mutex timer_lock;
 
 HANDLE g_iocp;
 SOCKET l_socket;
 
+int g_curUser = 0;
+
+SQLHENV henv;
+SQLHDBC hdbc;
+SQLHSTMT hstmt = 0;
+SQLRETURN retcode;
+SQLWCHAR dUser_name[MAX_NAME_LEN];
+SQLINTEGER dUser_id, dUser_Level, dUser_posx, dUser_posy, dUser_hp;
+SQLLEN cbName = 0, cbID = 0, cbLevel = 0, cbPosx, cbPosy, cbHp;
+
+void initialize_tiles();
 void initialize_clients();
 void initialize_npcs();
 void initialize_sectors();
+void initialize_db();
 
 void worker_thread();
 
-void addtimer(int id, ENUMOP op, unsigned int timer) // 이벤트 new delete 안하고 재사용 하는것이 얼마나 성능이 좋아지는지 확인해야함
-{
-	Event_Type eType;
-	eType.obj_id = id;
-	eType.event_id = op;
-	eType.wakeup_time = high_resolution_clock::now() + milliseconds(timer);
-
-	//g_clients[id].m_event.obj_id = id;
-	//g_clients[id].m_event.event_id = op;
-	//g_clients[id].m_event.wakeup_time = high_resolution_clock::now() + milliseconds(timer);
-	//g_clients[id].m_event.target_id = 0;
-
-	timer_lock.lock();
-	timer_queue.emplace(eType);
-	timer_lock.unlock();
+void show_error() {
+	printf("error\n");
 }
 
-void initialize_clients() // 멀티 스레드 이전 싱글 스레드에서 돌아감. 뮤텍스 필요 없음
+void HandleDiagnosticRecord(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode)
 {
-	for (int i = 0; i < MAX_USER; ++i)
-	{
-		g_clients[i].m_id = i;
-		g_clients[i].m_status = ST_FREE;
-		InitializeSRWLock(&g_clients[i].m_viewlist.rwlock);
+	SQLSMALLINT iRec = 0;
+	SQLINTEGER iError;
+	WCHAR wszMessage[1000];
+	WCHAR wszState[SQL_SQLSTATE_SIZE + 1];
+	if (RetCode == SQL_INVALID_HANDLE) {
+		fwprintf(stderr, L"Invalid handle!\n");
+		return;
 	}
-}
-
-void initialize_sectors()
-{
-	for (int i = 0; i < MAX_COL; ++i)
-	{
-		for (int j = 0; j < MAX_ROW; ++j)
-		{
-			g_sectors[j][i].m_StartX = i * COL_GAP;
-			g_sectors[j][i].m_StartY = j * ROW_GAP;
-			g_sectors[j][i].m_EndX = (i + 1) * COL_GAP;
-			g_sectors[j][i].m_EndY = (j + 1) * ROW_GAP;
+	while (SQLGetDiagRec(hType, hHandle, ++iRec, wszState, &iError, wszMessage,
+		(SQLSMALLINT)(sizeof(wszMessage) / sizeof(WCHAR)), (SQLSMALLINT*)NULL) == SQL_SUCCESS) {
+		// Hide data truncated..
+		if (wcsncmp(wszState, L"01004", 5)) {
+			fwprintf(stderr, L"[%5.5s] %s (%d)\n", wszState, wszMessage, iError);
 		}
 	}
 }
+
+void addtimer(int id, ENUMOP op, unsigned int timer) // 이벤트 new delete 안하고 재사용 하는것이 얼마나 성능이 좋아지는지 확인해야함
+{
+	g_clients[id].m_event.obj_id = id;
+	g_clients[id].m_event.event_id = op;
+	g_clients[id].m_event.wakeup_time = high_resolution_clock::now() + milliseconds(timer);
+
+	timer_lock.lock();	
+	timer_queue.emplace(&g_clients[id].m_event);
+	timer_lock.unlock();
+}
+
 
 int API_send_message(lua_State* L)
 {
 	int my_id = (int)lua_tointeger(L, -3);
 	int user_id = (int)lua_tointeger(L, -2);
 	char* message = (char*)lua_tostring(L, -1);
+
+	g_clients[my_id].m_event.target_id = user_id;
 
 	CPacketHandler::GetInst()->send_chat_packet(user_id, my_id, message);
 	lua_pop(L, 3);
@@ -93,6 +106,99 @@ int API_get_y(lua_State* L)
 	return 1;
 }
 
+int API_get_move_num(lua_State* L)
+{
+	int obj_id = (int)lua_tointeger(L, -1);
+	lua_pop(L, 1);
+	lua_pushnumber(L, g_clients[obj_id].m_movenum);
+	return 1;
+}
+
+int API_set_move_num(lua_State* L)
+{
+	int obj_id = (int)lua_tointeger(L, -2);
+	int move_num = (int)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+	g_clients[obj_id].m_movenum = move_num;
+	lua_pushnumber(L, move_num);
+	return 1;
+}
+
+int API_random_move(lua_State* L)
+{
+	int obj_id = (int)lua_tointeger(L, -2);
+	ENUMOP event_type = (ENUMOP)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+
+	CPacketHandler::GetInst()->npc_move(obj_id, event_type); // a*는 여기서 돌아간다. // 여기서 key는 npc id
+
+	return 1;
+}
+
+
+void initialize_db()
+{
+	CDBHandler::GetInst()->init();
+}
+
+void initialize_tiles()
+{
+	cout << "start tiles initialize" << endl;
+	vector<short> v1;
+	vector<short> v2;
+
+	for (short i = 0; i < WORLD_WIDTH; ++i)
+	{
+		v1.emplace_back(i);
+		v2.emplace_back(i);
+	}
+
+	random_device rd;
+	mt19937 g(rd());
+	shuffle(v1.begin(), v1.end(), g);
+	shuffle(v2.begin(), v2.end(), g);
+
+	for (int i = 0; i < MAX_TILE_COL; ++i)
+	{
+		for (int j = 0; j < MAX_TILE_ROW; ++j)
+		{
+			g_tiles[j][i].m_id = i * MAX_TILE_COL + j;
+			g_tiles[j][i].m_x = v1[i];
+			g_tiles[j][i].m_y = v2[j];
+			g_tiles[j][i].m_TileType = TILE_TYPE::OBSTACLE;
+		}
+	}
+	cout << "finish tiles initialize" << endl << endl;
+}
+
+void initialize_clients() // 멀티 스레드 이전 싱글 스레드에서 돌아감. 뮤텍스 필요 없음
+{
+	cout << "start clients initialize" << endl;
+	for (int i = 0; i < MAX_USER; ++i)
+	{
+		g_clients[i].m_id = i;
+		g_clients[i].m_status = ST_FREE;
+		InitializeSRWLock(&g_clients[i].m_viewlist.rwlock);
+	}
+	cout << "end clients initialize" << endl<<endl;
+}
+
+void initialize_sectors()
+{
+	cout << "start sectors initialize" << endl;
+	for (int i = 0; i < MAX_COL; ++i)
+	{
+		for (int j = 0; j < MAX_ROW; ++j)
+		{
+			g_sectors[j][i].m_StartX = i * COL_GAP;
+			g_sectors[j][i].m_StartY = j * ROW_GAP;
+			g_sectors[j][i].m_EndX = (i + 1) * COL_GAP;
+			g_sectors[j][i].m_EndY = (j + 1) * ROW_GAP;
+		}
+	}
+	cout << "end sectors initialize" << endl << endl;
+}
+
 void initialize_npcs()
 {
 	cout << "start npc initialize" << endl;
@@ -100,7 +206,7 @@ void initialize_npcs()
 	{
 		g_clients[i].m_socket = 0;
 		g_clients[i].m_id = i;
-		sprintf_s(g_clients[i].name, "NPC%d", i);
+		wprintf_s(g_clients[i].name, "NPC%d", i);
 		g_clients[i].m_status = ST_SLEEP;
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
@@ -126,6 +232,9 @@ void initialize_npcs()
 		lua_register(L, "API_send_message", API_send_message);
 		lua_register(L, "API_get_x", API_get_x);
 		lua_register(L, "API_get_y", API_get_y);
+		lua_register(L, "API_set_move_num", API_set_move_num);
+		lua_register(L, "API_get_move_num", API_get_move_num);
+		lua_register(L, "API_random_move", API_random_move);
 	}
 	cout << "finish npc initialize" << endl;
 }
@@ -143,31 +252,20 @@ void timer() // 스레드
 				break;
 			}
 
-			if (timer_queue.top().wakeup_time > high_resolution_clock::now() )
+			if (timer_queue.top()->wakeup_time > high_resolution_clock::now() )
 			{
 				timer_lock.unlock();
 				break;
 			}
-			Event_Type tEvent = timer_queue.top();
+			Event_Type* tEvent = timer_queue.top();
 			timer_queue.pop();
 			timer_lock.unlock();
 
-			switch (tEvent.event_id)
-			{
-			case OP_AIMOVE:
-				EXOVER* exover = new EXOVER;
-				exover->op = OP_AIMOVE;
-
-				PostQueuedCompletionStatus(g_iocp, 1, tEvent.obj_id, &exover->over);
-
-				//g_clients[tEvent.obj_id].m_recv_over.op = OP_AIMOVE;
-				//
-				//PostQueuedCompletionStatus(g_iocp, 1, tEvent.obj_id, &g_clients[tEvent.obj_id].m_recv_over.over);
-
-				//CPacketHandler::GetInst()->npc_move(tEvent.obj_id, OP_AIMOVE);
-				//addtimer(tEvent.obj_id, tEvent.event_id, 1000);
-				break;
-			}
+			EXOVER* exover = new EXOVER;
+			exover->op = OP_RANDOM_MOVE;
+			exover->player_id = tEvent->obj_id;
+			PostQueuedCompletionStatus(g_iocp, 1, exover->player_id, &exover->over);
+		
 		}
 	}
 }
@@ -189,34 +287,42 @@ void worker_thread()
 
 		switch (exover->op)
 		{
-		case OP_PLAYER_MOVE:
+		case OP_PLAYER_MOVE: // 이런 이벤트만 처리하게 묶기 // send recv accept eventprocess 이렇게만.
 		{
-			g_clients[user_id].lua_l.lock();
+			g_clients[user_id].lua_l.lock(); // npc id
 			lua_State* L = g_clients[user_id].L;
 			lua_getglobal(L, "event_player_move");
-			lua_pushnumber(L, exover->player_id);
+			lua_pushnumber(L, exover->player_id);  // client id
 			int error = lua_pcall(L, 1, 0, 0);
 			if (error) cout << lua_tostring(L, -1)<<endl;
-			//lua_pop(L, 1);
 			g_clients[user_id].lua_l.unlock();
 			delete exover;
 		}
 		break;
-		case OP_AIMOVE:
+		case OP_RANDOM_MOVE_FINISH:
 		{
-			CPacketHandler::GetInst()->npc_move(static_cast<int>(key), exover->op); // a*는 여기서 돌아간다. // 여기서 key는 npc id
-			bool keep_alive = false;
-			for (int i = 0; i < NPC_START_IDX; ++i)
-				if (true == CViewProcessing::GetInst()->is_near_check_pp(user_id, i))
-					if (ST_ACTIVE == g_clients[i].m_status)
-					{
-						keep_alive = true;
-						break;
-					}
-			if (true == keep_alive) addtimer(static_cast<int>(key), OP_AIMOVE, 1000);
-			else g_clients[user_id].m_status = ST_SLEEP;
-
-			delete exover; // 어차피 send할때 delete 하니까 여기서 안해줘도 될듯. -> 성능차이 남
+			g_clients[user_id].lua_l.lock();
+			lua_State* L = g_clients[user_id].L;
+			lua_getglobal(L, "event_ai_finish");
+			lua_pushnumber(L, exover->player_id);
+			lua_pushnumber(L, g_clients[user_id].m_event.target_id);
+			int error = lua_pcall(L, 2, 0, 0);
+			if (error) cout << lua_tostring(L, -1) << endl;
+			g_clients[user_id].lua_l.unlock();
+			delete exover;
+		}
+		break;
+		case OP_RANDOM_MOVE:
+		{
+			g_clients[user_id].lua_l.lock();
+			lua_State* L = g_clients[user_id].L;
+			lua_getglobal(L, "event_ai_move");
+			lua_pushnumber(L, exover->player_id);
+			lua_pushnumber(L, exover->op);
+			int error = lua_pcall(L, 2, 0, 0);
+			if (error) cout << lua_tostring(L, -1) << endl;
+			g_clients[user_id].lua_l.unlock();
+			//delete exover;
 		}
 		break;
 		case OP_RECV:
@@ -250,8 +356,13 @@ void worker_thread()
 				lock_guard<mutex> gl{ g_clients[i].m_cl }; // unlcok 이 필요 없다. 블록에서 빠져나갈때 unlock 을 해줌, 루프를 매번 해줄때 unlock을 해주고 lock을 건다.
 				if (ST_FREE == g_clients[i].m_status) //  template 객체. 생성자 소멸자 호출할때 lock unlock 함. 함수 or 블록 부분에 사용하면 유용하다
 				{
+					int cur = i;
+
 					g_clients[i].m_status = ST_ALLOC;
 					user_id = i;
+
+					if(g_curUser <= cur)
+						++g_curUser;
 					break;
 				}
 			}
@@ -265,6 +376,7 @@ void worker_thread()
 				CreateIoCompletionPort(reinterpret_cast<HANDLE>(c_socket), g_iocp, user_id, 0);
 
 				CLIENT& NewClient = g_clients[user_id];
+				//wcscpy_s(NewClient.name, reinterpret_cast<WCHAR*>(dUser_name));
 				NewClient.m_id = user_id;
 				NewClient.m_prev_size = 0;
 				NewClient.m_recv_over.op = OP_RECV;
@@ -274,14 +386,16 @@ void worker_thread()
 				NewClient.m_socket = c_socket;
 				NewClient.m_viewlist.viewlist.clear();
 				NewClient.x = rand() % WORLD_WIDTH;
-				NewClient.y = rand() % WORLD_HEIGHT;
+				NewClient.y = rand() % WORLD_WIDTH;
+				//NewClient.level = dUser_Level;
+				//NewClient.hp = dUser_hp;
 
 				NewClient.m_otype = O_PLAYER;
 
 				DWORD flags = 0;
 				WSARecv(c_socket, &NewClient.m_recv_over.wsabuf, 1, NULL, &flags, &NewClient.m_recv_over.over, NULL);
-
-				// sector에 집어 넣어준다.
+				
+				//// sector에 집어 넣어준다.
 				short col = NewClient.x / COL_GAP;
 				short row = NewClient.y / ROW_GAP;
 				g_sectors[row][col].m_setPlayerList.emplace(NewClient.m_id);
@@ -303,7 +417,6 @@ void worker_thread()
 		}
 	}
 }
-
 
 int main()
 {
@@ -332,9 +445,11 @@ int main()
 
 	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 
+	initialize_tiles();
 	initialize_clients();
 	initialize_sectors();
 	initialize_npcs();
+	initialize_db();
 
 	CreateIoCompletionPort(reinterpret_cast<HANDLE>(l_socket), g_iocp, 999, 0); // 등록
 
@@ -356,5 +471,14 @@ int main()
 	for (auto& threads : worker_threads) threads.join();
 
 	//CloseHandle(g_iocp); // 추가
+
+	if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
+		SQLCancel(hstmt);
+		SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+	}
+
+	SQLDisconnect(hdbc);
+	SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
+	SQLFreeHandle(SQL_HANDLE_ENV, henv);
 }
 
